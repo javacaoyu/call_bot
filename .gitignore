@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.uv/
+dist/
+build/
+
+# 环境与密钥
+.env
+.env.*
+*.key
+*.pem
+secrets/
+
+# 本地模型权重与大数据（不进 git）
+models/
+checkpoints/
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+
+# 运行时数据 / 录音
+recordings/
+data/
+*.wav
+
+# 日志
+*.log
+logs/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
