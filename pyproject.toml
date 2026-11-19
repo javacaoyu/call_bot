@@ -9,6 +9,7 @@ dependencies = [
     "websockets>=13",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
+    "agentscope>=2.0",
     "openai>=1.50",
     "numpy>=2.0",
     "soundfile>=0.12",
