@@ -28,3 +28,6 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-chat"
     # 编排层后端：agentscope（默认）| simple（自建 fallback）
     orchestration_backend: str = "agentscope"
+    # VAD（WBS 3.1）：Silero 模型路径与语音概率阈值（相对路径基于项目根）
+    vad_model_path: str = "models/silero_vad.jit"
+    vad_threshold: float = 0.5
