@@ -38,6 +38,10 @@ data/
 *.log
 logs/
 
+# 前端
+node_modules/
+frontend/dist/
+
 # 编辑器 / 系统
 .vscode/
 .idea/
