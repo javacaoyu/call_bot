@@ -10,11 +10,15 @@ import logging
 from collections.abc import AsyncIterator, Sequence
 from typing import Protocol
 
+from callbot.orchestration.context import (
+    DEFAULT_MAX_HISTORY_TOKENS,
+    DEFAULT_SYSTEM_PROMPT,
+    HistoryManager,
+    PromptBuilder,
+)
 from callbot.providers.llm import ChatMessage, DeepSeekStreamingLLM
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_SYSTEM_PROMPT = "你是一名专业的外呼机器人客服，回答简洁、礼貌、口语化。"
 
 
 class Orchestrator(Protocol):
@@ -30,33 +34,33 @@ class Orchestrator(Protocol):
 
 
 class SimpleOrchestrator:
-    """自建 fallback 编排：system prompt + 历史拼接 + 自有流式 LLM。"""
+    """自建 fallback 编排：稳定前缀 + 历史滑窗 + 自有流式 LLM。"""
 
     def __init__(
         self,
         llm: DeepSeekStreamingLLM,
-        system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        max_history_tokens: int = DEFAULT_MAX_HISTORY_TOKENS,
     ) -> None:
         self._llm = llm
-        self._system_prompt = system_prompt
-        self._history: list[ChatMessage] = []
+        self._builder = PromptBuilder(system_prompt=system_prompt)
+        self._history = HistoryManager(max_tokens=max_history_tokens)
 
     async def stream_reply(self, user_text: str) -> AsyncIterator[str]:
-        """追加用户消息 → 流式生成 → 记录完整回复。"""
-        self._history.append({"role": "user", "content": user_text})
-        messages: Sequence[ChatMessage] = [
-            {"role": "system", "content": self._system_prompt},
-            *self._history,
-        ]
+        """组装消息 → 流式生成 → 记录历史。"""
+        messages: Sequence[ChatMessage] = self._builder.build(
+            self._history.messages(), user_text
+        )
         pieces: list[str] = []
         async for token in self._llm.generate(messages):
             pieces.append(token)
             yield token
-        self._history.append({"role": "assistant", "content": "".join(pieces)})
+        self._history.add_user(user_text)
+        self._history.add_assistant("".join(pieces))
 
     def reset(self) -> None:
-        """清空历史（system prompt 保留）。"""
-        self._history.clear()
+        """清空历史（前缀保留）。"""
+        self._history.reset()
 
 
 class AgentScopeOrchestrator:
@@ -67,7 +71,7 @@ class AgentScopeOrchestrator:
         base_url: str,
         api_key: str,
         model: str,
-        system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     ) -> None:
         # 延迟导入：AgentScope 启动较重，仅该实现需要
         from agentscope.agent import Agent
@@ -104,7 +108,7 @@ def create_orchestrator(
     base_url: str,
     api_key: str,
     model: str,
-    system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT,
 ) -> Orchestrator:
     """配置驱动的编排层工厂。
 

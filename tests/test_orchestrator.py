@@ -24,13 +24,14 @@ class FakeLLM:
 
 
 async def test_simple_orchestrator_history() -> None:
-    """system prompt + 用户消息进 LLM；回复追加进历史。"""
+    """稳定前缀 + 历史 + 当前输入进 LLM；回复追加进历史。"""
     llm = FakeLLM(["你", "好"])
     orch = SimpleOrchestrator(llm=llm, system_prompt="sys")
     out = [t async for t in orch.stream_reply("hi")]
     assert out == ["你", "好"]
     assert llm.calls[0][0] == {"role": "system", "content": "sys"}
-    assert llm.calls[0][1] == {"role": "user", "content": "hi"}
+    assert any("合规边界" in m["content"] for m in llm.calls[0])
+    assert llm.calls[0][-1] == {"role": "user", "content": "hi"}
     # 第二轮：历史含上一轮 assistant 回复
     await orch.stream_reply("again").__anext__()
     msgs = llm.calls[1]
@@ -39,13 +40,14 @@ async def test_simple_orchestrator_history() -> None:
 
 
 async def test_simple_orchestrator_reset() -> None:
-    """reset 清空历史。"""
+    """reset 清空历史（前缀保留）。"""
     llm = FakeLLM(["好"])
     orch = SimpleOrchestrator(llm=llm)
     await orch.stream_reply("hi").__anext__()
     orch.reset()
     await orch.stream_reply("hi2").__anext__()
-    assert len(llm.calls[1]) == 2  # 只剩 system + 新 user
+    # 人设 + 3 条合规边界 + 新 user = 5 条，无历史
+    assert len(llm.calls[1]) == 5
 
 
 def test_create_orchestrator_factory() -> None:
