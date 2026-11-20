@@ -20,6 +20,8 @@ let audioCtx: AudioContext | null = null;
 let processor: ScriptProcessorNode | null = null;
 let playCtx: AudioContext | null = null;
 let nextPlayTime = 0;
+// 已调度的播放源：打断时立即停止（已排队未播 + 正在播的）
+const activeSources: AudioBufferSourceNode[] = [];
 
 const SIGNAL_URL =
   (import.meta.env.VITE_SIGNAL_URL as string | undefined) ??
@@ -100,9 +102,27 @@ function playAudioFrame(data: string, sampleRate: number): void {
     const startAt = Math.max(nextPlayTime, playCtx.currentTime + 0.005);
     src.start(startAt);
     nextPlayTime = startAt + buffer.duration;
+    activeSources.push(src);
+    src.onended = () => {
+      const i = activeSources.indexOf(src);
+      if (i >= 0) activeSources.splice(i, 1);
+    };
   } catch {
     // 音频解码失败静默（不影响转写显示）
   }
+}
+
+/** 打断：立即停止所有已调度/正在播的 TTS 音频（响应 <150ms 的关键）。 */
+function stopPlayback(): void {
+  for (const src of activeSources) {
+    try {
+      src.stop();
+    } catch {
+      // 已结束的 source 忽略
+    }
+  }
+  activeSources.length = 0;
+  nextPlayTime = 0;
 }
 
 async function connect(): Promise<void> {
@@ -164,6 +184,9 @@ async function connect(): Promise<void> {
         botReply.value += msg.text ?? "";
       } else if (msg.type === "audio") {
         playAudioFrame(msg.data ?? "", msg.sample_rate ?? 24000);
+      } else if (msg.type === "stop_audio") {
+        // 打断：立即停播（后端已清未发队列）
+        stopPlayback();
       }
     });
     signaling.onClose(() => {
@@ -186,6 +209,7 @@ async function connect(): Promise<void> {
 
 function disconnect(): void {
   stopPcmStream();
+  stopPlayback();
   pc?.close();
   pc = null;
   localStream?.getTracks().forEach((t) => t.stop());

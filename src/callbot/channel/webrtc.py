@@ -269,6 +269,8 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
     flushed = False
     utterance: list[str] = []
     reply_in_progress = False
+    reply_task: asyncio.Task[None] | None = None
+    pending_spoken: list[str] = []  # 打断上下文：本轮已完整说出的句子
     orch: Orchestrator | None = None
 
     async def send_json(payload: dict[str, Any]) -> None:
@@ -286,8 +288,12 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
             }
         )
 
-    async def run_reply(text: str) -> None:
-        """回复管线：编排层 → joiner → 引擎 FIFO → 并发推送音频帧。"""
+    async def run_reply(text: str, spoken_prefix: str = "") -> None:
+        """回复管线：编排层 → joiner → 引擎 FIFO → 并发推送音频帧。
+
+        spoken_prefix：打断后的上下文重建素材（已完整说出的句子）。
+        打断时本 task 被 cancel → token 流 aclose → LLM 关流。
+        """
         nonlocal reply_in_progress
         nonlocal orch
         reply_in_progress = True
@@ -307,7 +313,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
             engine.mark_thinking()
 
             async def tokens() -> AsyncIterator[str]:  # noqa: ANN202
-                async for token in orch.stream_reply(text):
+                async for token in orch.stream_reply(text, spoken_prefix):
                     await send_json({"type": "reply", "text": token})
                     yield token
 
@@ -334,6 +340,26 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
             await send_json({"type": "status", "detail": "回复失败，请重试"})
             reply_in_progress = False
 
+    async def handle_interrupt() -> None:
+        """打断动作链（3.3）：停音频 + 关 LLM 流 + 暂存已说句子。
+
+        顺序：引擎清未播队列（拿「已完整说出的句子」快照）→ drain 退出 →
+        cancel 回复 task（token 流 aclose → LLM 关流）→ 前端 stop_audio
+        立即停播已调度的帧。
+        """
+        nonlocal reply_in_progress, pending_spoken
+        engine = session.engine
+        if engine is None:
+            return
+        spoken = engine.interrupt()  # 清队列 + SPEAKING/THINKING → LISTENING
+        pending_spoken.extend(spoken)
+        reply_in_progress = False
+        if reply_task is not None:
+            reply_task.cancel()
+        await send_json({"type": "stop_audio"})
+        if spoken:
+            logger.info("打断：已说 %d 句将并入上下文", len(spoken))
+
     try:
         while True:
             message = await websocket.receive()
@@ -347,7 +373,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                 if event is VADEvent.SPEECH_START:
                     flushed = False  # 新语音段到达，重置收尾门控
                     if reply_in_progress:
-                        logger.info("VAD 起音（回复期间，打断机制 3.3 接入）")
+                        asyncio.ensure_future(handle_interrupt())
                 elif event is VADEvent.SPEECH_END:
                     engine = session.engine if session else None
                     if (
@@ -364,7 +390,9 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                         if text:
                             logger.info("完整转写: %s", text)
                             await send_json({"type": "utterance", "text": text})
-                            asyncio.ensure_future(run_reply(text))
+                            prefix = "".join(pending_spoken)
+                            pending_spoken.clear()
+                            reply_task = asyncio.ensure_future(run_reply(text, prefix))
                 if session is not None and session.engine is not None:
                     session.engine.feed_audio(frame)
                 continue

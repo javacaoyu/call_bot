@@ -24,8 +24,14 @@ logger = logging.getLogger(__name__)
 class Orchestrator(Protocol):
     """编排层接口（纯文字进、纯文字出）。"""
 
-    def stream_reply(self, user_text: str) -> AsyncIterator[str]:
-        """根据用户文本流式生成回复；关闭生成器即停止生成。"""
+    def stream_reply(
+        self, user_text: str, spoken_prefix: str = ""
+    ) -> AsyncIterator[str]:
+        """根据用户文本流式生成回复；关闭生成器即停止生成。
+
+        spoken_prefix：打断上下文重建（3.3）——机器人本轮「已完整说出的
+        句子」，作为 assistant 历史注入；正常轮次为空字符串。
+        """
         ...
 
     def reset(self) -> None:
@@ -46,8 +52,16 @@ class SimpleOrchestrator:
         self._builder = PromptBuilder(system_prompt=system_prompt)
         self._history = HistoryManager(max_tokens=max_history_tokens)
 
-    async def stream_reply(self, user_text: str) -> AsyncIterator[str]:
-        """组装消息 → 流式生成 → 记录历史。"""
+    async def stream_reply(
+        self, user_text: str, spoken_prefix: str = ""
+    ) -> AsyncIterator[str]:
+        """组装消息 → 流式生成 → 记录历史。
+
+        打断上下文重建：spoken_prefix 非空时先以 assistant 身份入历史
+        （被打断的半句不会出现——spoken 只含完整句），再接用户新话。
+        """
+        if spoken_prefix:
+            self._history.add_assistant(spoken_prefix)
         messages: Sequence[ChatMessage] = self._builder.build(
             self._history.messages(), user_text
         )
@@ -82,10 +96,24 @@ class AgentScopeOrchestrator:
         llm = OpenAIChatModel(credential=credential, model=model, stream=True)
         self._agent = Agent(name="callbot", system_prompt=system_prompt, model=llm)
 
-    async def stream_reply(self, user_text: str) -> AsyncIterator[str]:
-        """Agent 流式回复：取 TextBlockDeltaEvent 的 delta 文本。"""
+    async def stream_reply(
+        self, user_text: str, spoken_prefix: str = ""
+    ) -> AsyncIterator[str]:
+        """Agent 流式回复：取 TextBlockDeltaEvent 的 delta 文本。
+
+        打断上下文重建：spoken_prefix 非空时先 observe 一条 assistant
+        消息（已完整说出的句子），再以 user 消息触发回复。
+        """
         from agentscope.message import Msg, TextBlock
 
+        if spoken_prefix:
+            await self._agent.observe(
+                Msg(
+                    name="assistant",
+                    role="assistant",
+                    content=[TextBlock(text=spoken_prefix)],
+                ),
+            )
         async for event in self._agent.reply_stream(
             inputs=Msg(
                 name="user",

@@ -58,6 +58,30 @@ def test_create_orchestrator_factory() -> None:
         create_orchestrator("nope", "u", "k", "m")
 
 
+async def test_simple_orchestrator_spoken_prefix() -> None:
+    """打断上下文重建：已说句子以 assistant 身份注入历史（user 之前）。"""
+    llm = FakeLLM(["新", "回复"])
+    orch = SimpleOrchestrator(llm=llm, system_prompt="sys")
+    out = [t async for t in orch.stream_reply("您说什么", spoken_prefix="第一句。第二句。")]
+    assert out == ["新", "回复"]
+    msgs = llm.calls[0]
+    assert msgs[-2] == {"role": "assistant", "content": "第一句。第二句。"}
+    assert msgs[-1] == {"role": "user", "content": "您说什么"}
+
+
+async def test_simple_orchestrator_spoken_prefix_history_persists() -> None:
+    """打断轮结束后：注入的已说句子与完整回复都在历史中延续。"""
+    llm = FakeLLM(["好", "的"])
+    orch = SimpleOrchestrator(llm=llm, system_prompt="sys")
+    _ = [t async for t in orch.stream_reply("打断话", spoken_prefix="第一句。")]
+    _ = [t async for t in orch.stream_reply("下一轮")]
+    msgs = llm.calls[1]  # 下一轮视角
+    assert msgs[-4] == {"role": "assistant", "content": "第一句。"}
+    assert msgs[-3] == {"role": "user", "content": "打断话"}
+    assert msgs[-2] == {"role": "assistant", "content": "好的"}
+    assert msgs[-1] == {"role": "user", "content": "下一轮"}
+
+
 def test_agentscope_orchestrator_constructs() -> None:
     """AgentScope 实现可无网络构造（模型连接惰性）。"""
     orch = AgentScopeOrchestrator(
@@ -66,3 +90,45 @@ def test_agentscope_orchestrator_constructs() -> None:
         model="deepseek-chat",
     )
     assert orch._agent.name == "callbot"
+
+
+class _Evt:
+    """伪 Agent 事件：TextBlockDeltaEvent 的 delta 文本。"""
+
+    delta = "好的"
+
+
+class FakeAgent:
+    """伪 Agent：记录 observe 的消息与 reply_stream 调用。"""
+
+    name = "callbot"
+
+    def __init__(self) -> None:
+        self.observed: list[object] = []
+
+    async def observe(self, msgs=None) -> None:  # noqa: ANN001
+        if msgs is not None:
+            self.observed.append(msgs)
+
+    async def reply_stream(self, inputs=None, **kwargs):  # noqa: ANN001, ANN002
+        yield _Evt()
+
+
+async def test_agentscope_spoken_prefix_observes_assistant() -> None:
+    """打断上下文重建：已说句子 observe 为 assistant 消息后触发回复。"""
+    orch = AgentScopeOrchestrator(base_url="x", api_key="k", model="m")
+    orch._agent = FakeAgent()  # noqa: SLF001 - 注入伪 Agent
+    out = [t async for t in orch.stream_reply("用户新话", spoken_prefix="已说句子。")]
+    assert out == ["好的"]
+    (msg,) = orch._agent.observed
+    assert msg.role == "assistant"
+    assert msg.content[0].text == "已说句子。"
+
+
+async def test_agentscope_empty_prefix_no_observe() -> None:
+    """无打断时行为不变：不 observe 额外消息。"""
+    orch = AgentScopeOrchestrator(base_url="x", api_key="k", model="m")
+    orch._agent = FakeAgent()  # noqa: SLF001
+    out = [t async for t in orch.stream_reply("hi")]
+    assert out == ["好的"]
+    assert orch._agent.observed == []

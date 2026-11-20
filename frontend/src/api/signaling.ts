@@ -10,7 +10,8 @@ export interface SignalMessage {
     | "status"
     | "utterance"
     | "reply"
-    | "audio";
+    | "audio"
+    | "stop_audio";
   sdp?: string;
   candidate?: RTCIceCandidateInit | null;
   detail?: string;
