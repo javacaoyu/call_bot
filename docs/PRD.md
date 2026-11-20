@@ -350,7 +350,7 @@ flowchart LR
 
 - FAQ 精确匹配优先：毫秒级命中，跳过向量检索与 rerank；
 - 向量检索：pgvector HNSW + 小 top-k（召回 20~50）+ 向量量化（halfvec）；
-- rerank（延迟大头）：只对召回 top-N 计算、高置信度跳过、用 bge-reranker-lite；
+- rerank（延迟大头）：只对召回 top-N 计算、高置信度跳过、用 bge-reranker-base；
 - 检索缓存 + 说话中预检索（配合边说边想）；
 - 分块小（200~500 token）+ 只拼 top-3 精炼片段 + 引用。
 
