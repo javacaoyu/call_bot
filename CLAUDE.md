@@ -37,6 +37,32 @@
 - Python 用 UV；Docker 在 WSL Ubuntu；开发机 GPU 为 RTX 4060 8GB。
 - 本地只跑 ASR/TTS（FunASR + CosyVoice2-0.5B），LLM 走云端 DeepSeek。
 
+## 依赖与运行约束（血的教训，勿动）
+
+> 完整复盘见 `docs/local-models.md`。以下 pin 均经 WBS 1.3 实测踩坑得出，**不得随意升级**：
+
+- torch / torchaudio **==2.11.0**（cu126 源）：驱动 560.94 上限 CUDA 12.6 → 只能用 cu126；cu126 源 torchaudio 最高 2.11.0，故 torch 必须同为 2.11.0。
+- transformers **==4.51.3**：CosyVoice2 LLM 权重为 BFloat16；5.x 在 fp32 下 dtype 崩溃、fp16 下生成退化。
+- sentence-transformers **<5.3**：6.x 依赖 transformers 5.x 的 `is_kernels_available`，与上条互斥。
+- wetext **==0.0.4**（CosyVoice2 文本前端，0.2.1 致 token 异常）；torchcodec **==0.11.1**（torchaudio 2.11 ABI 匹配）；onnxruntime-gpu **==1.20.2**（1.32 需 CUDA 13，本机不支持；1.18 与 numpy 2 ABI 冲突）。
+- matcha 不装 pip 包：源码放 `third_party/Matcha-TTS` 并加入 sys.path（PyPI 元数据带 gradio→websockets<12 与项目冲突，仓库 pyproject 亦过旧）。
+
+**运行本地模型前必须设置**（否则 onnxruntime CUDA provider 找不到 CUDA 库，flow 落 CPU → 坏 latent → 合成乱语）：
+
+```bash
+export LD_LIBRARY_PATH=$(find .venv/lib/python3.12/site-packages/nvidia -name lib -type d | tr '\n' ':')$LD_LIBRARY_PATH
+```
+
+**CosyVoice2 调用约束**：`inference_instruct2` 的 instruct 文本必须以 `<|endofprompt|>` 结尾（缺 → LLM 无限生成）；0.5B 模型无内置音色，必须传 prompt_wav 参考音频。
+
+**系统依赖**：`build-essential`（pyworld 需源码编译）；uv 实际位于 `~/.local/bin/uv`（非交互 shell 的 PATH 可能不含 `~/.local/bin`，命令用完整路径）。
+
+## 工程操作教训
+
+- **uv sync 会重置 venv** 为 pyproject+lock 的声明集合：临时 `uv pip install` 的包若不写进 pyproject，下次 sync 会被清掉。
+- **后台任务命令不要接管道**（`| tail` 等会掩盖退出码，已两次误判「失败」为「成功」）；大模型下载/安装任务完成后必须核对输出文件确认真成功。
+- pkill -f 的模式会匹配自身 shell 命令行导致误杀自己，改用精确 PID 或进程名。
+
 ## 提交约定
 
 - 提交信息遵循 Conventional Commits。
