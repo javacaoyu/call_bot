@@ -26,3 +26,5 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com"
     llm_api_key: str = ""
     llm_model: str = "deepseek-chat"
+    # 编排层后端：agentscope（默认）| simple（自建 fallback）
+    orchestration_backend: str = "agentscope"
