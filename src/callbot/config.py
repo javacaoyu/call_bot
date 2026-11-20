@@ -22,3 +22,7 @@ class Settings(BaseSettings):
     # 默认指向 docker-compose 起的本地库（凭据见 .env.example）
     db_url: str = "postgresql://callbot:callbot@127.0.0.1:5432/callbot"
     models_dir: str = "models"
+    # LLM Provider（OpenAI 兼容，本地 vLLM/Ollama 换 base_url/model 即可）
+    llm_base_url: str = "https://api.deepseek.com"
+    llm_api_key: str = ""
+    llm_model: str = "deepseek-chat"
