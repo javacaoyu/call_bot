@@ -1,17 +1,19 @@
-"""WebRTC 信令与音频通道。
+"""WebRTC 信令与音频通道（端到端半双工链路）。
 
-流程：浏览器经 WebSocket 发送 offer → 后端创建 RTCPeerConnection 回 answer →
-双方交换 ICE 建立媒体连接。**音频不走 opus 轨道**（aiortc 的 opus 解码在本环境
-输出 48k 假标签 + 逐样本重复的损坏音频，实测 ASR 无法识别），改为浏览器以
-16k PCM16 二进制帧经同一 WebSocket 直传，后端直接送入会话引擎做流式 ASR。
+流程：浏览器 offer/answer/ICE 建立连接 → 16k PCM 二进制直传（opus 链路不可靠，
+见 CLAUDE.md 音频链路约束）→ 引擎流式 ASR → 静音收尾触发完整转写 →
+编排层（AgentScope）回复 → SpeechJoiner 首 token 即合成 → TTS 音频帧
+（JSON base64）推回浏览器播放。半双工：回复期间新转写丢弃。
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,17 +28,25 @@ from aiortc.mediastreams import MediaStreamTrack
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
+from callbot.config import Settings
 from callbot.engine.engine import ConversationEngine
 from callbot.engine.frames import AudioFrame
+from callbot.engine.joiner import SpeechJoiner
 from callbot.engine.state import EngineState
+from callbot.orchestration.orchestrator import Orchestrator, create_orchestrator
 from callbot.providers.asr import ASRResult, FunASRStreamingASR
+from callbot.providers.tts import CosyVoice2StreamingTTS
 
 logger = logging.getLogger(__name__)
 
 SignalMessage = dict[str, Any]
 
-# FunASR 模型为进程级单例（GPU 常驻，多路会话共享）
+# 静音判定阈值（实测：静音 RMS ~30-80，正常语音 ~1300+）
+_SILENCE_RMS = 100
+
+# 进程级模型单例（GPU 常驻，多路会话共享）
 _SHARED_ASR: FunASRStreamingASR | None = None
+_SHARED_TTS: CosyVoice2StreamingTTS | None = None
 
 
 def get_shared_asr() -> FunASRStreamingASR:
@@ -46,6 +56,15 @@ def get_shared_asr() -> FunASRStreamingASR:
         _SHARED_ASR = FunASRStreamingASR()
         _SHARED_ASR.load()
     return _SHARED_ASR
+
+
+def get_shared_tts() -> CosyVoice2StreamingTTS:
+    """获取进程级 CosyVoice2 单例（首次调用触发模型加载，约 10~30s）。"""
+    global _SHARED_TTS
+    if _SHARED_TTS is None:
+        _SHARED_TTS = CosyVoice2StreamingTTS()
+        _SHARED_TTS.load()
+    return _SHARED_TTS
 
 
 def validate_message(raw: str) -> SignalMessage | None:
@@ -184,8 +203,20 @@ def resample_pcm_to_16k(pcm: np.ndarray, src_rate: int) -> np.ndarray:
     return np.concatenate([f.to_ndarray().ravel() for f in frames])
 
 
-def _prepare_asr(session: Session, websocket: WebSocket) -> asyncio.Task[None]:
-    """异步准备 ASR：加载模型（线程内）并挂到会话引擎。"""
+def _prepare_asr(  # noqa: ANN001
+    session: Session,
+    websocket: WebSocket,
+    utterance: list[str],
+    reply_active: callable,
+) -> asyncio.Task[None]:
+    """异步准备 ASR：加载模型（线程内）并挂到会话引擎。
+
+    Args:
+        session: 会话。
+        websocket: 信令连接（转写推送）。
+        utterance: 当前轮转写累积缓冲（完整转写用）。
+        reply_active: 返回机器人是否正在回复（半双工门控）。
+    """
 
     def send_transcript(result: ASRResult) -> None:
         logger.info("转写: %s", result.text)
@@ -201,6 +232,9 @@ def _prepare_asr(session: Session, websocket: WebSocket) -> asyncio.Task[None]:
                 pass
 
         asyncio.ensure_future(_send())
+        # 半双工：机器人回复期间的新转写不参与下一轮
+        if not reply_active():
+            utterance.append(result.text)
 
     async def run() -> None:
         try:
@@ -223,30 +257,123 @@ def _prepare_asr(session: Session, websocket: WebSocket) -> asyncio.Task[None]:
 
 
 async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> None:
-    """处理一路浏览器信令连接：offer/answer/ICE + 16k PCM 直传转写推送。
+    """处理一路浏览器信令连接：信令 + PCM 直传 ASR + 回复管线（TTS 音频推送）。
 
     Args:
         websocket: 已 accept 的信令连接。
         manager: 会话管理器。
     """
+    settings = Settings()
     session: Session | None = None
-    last_audio_at = time.monotonic()
-    last_flush_at = 0.0
+    last_speech_at = time.monotonic()
+    flushed = False
+    utterance: list[str] = []
+    reply_in_progress = False
+    orch: Orchestrator | None = None
+
+    async def send_json(payload: dict[str, Any]) -> None:
+        try:
+            await websocket.send_text(json.dumps(payload))
+        except Exception:  # noqa: BLE001 - WS 已断开时静默
+            pass
+
+    async def send_audio(frame: AudioFrame) -> None:
+        await send_json(
+            {
+                "type": "audio",
+                "sample_rate": frame.sample_rate,
+                "data": base64.b64encode(frame.data).decode(),
+            }
+        )
+
+    async def run_reply(text: str) -> None:
+        """回复管线：编排层 → joiner → 引擎 FIFO → 并发推送音频帧。"""
+        nonlocal reply_in_progress
+        nonlocal orch
+        reply_in_progress = True
+        engine = session.engine
+        assert engine is not None
+        try:
+            # 编排器每会话只建一次：多轮对话历史跨轮保留
+            if orch is None:
+                orch = create_orchestrator(
+                    kind=settings.orchestration_backend,
+                    base_url=settings.llm_base_url,
+                    api_key=settings.llm_api_key,
+                    model=settings.llm_model,
+                )
+            tts = await asyncio.to_thread(get_shared_tts)
+            joiner = SpeechJoiner(tts)
+            engine.mark_thinking()
+
+            async def tokens() -> AsyncIterator[str]:  # noqa: ANN202
+                async for token in orch.stream_reply(text):
+                    await send_json({"type": "reply", "text": token})
+                    yield token
+
+            async def drain() -> None:
+                """并发排空输出 FIFO：帧到达即推送，低延迟。"""
+                while True:
+                    frame = engine.get_output_frame()
+                    if frame is not None:
+                        await send_audio(frame)
+                    elif not reply_in_progress:
+                        break
+                    else:
+                        await asyncio.sleep(0.01)
+
+            drain_task = asyncio.ensure_future(drain())
+            try:
+                async for frame in joiner.run(tokens()):
+                    engine.enqueue_output(frame)  # 首帧自动进入 SPEAKING
+            finally:
+                reply_in_progress = False
+                await drain_task  # 排空后 get_output_frame 自动回 LISTENING
+        except Exception:  # noqa: BLE001
+            logger.exception("回复管线失败")
+            await send_json({"type": "status", "detail": "回复失败，请重试"})
+            reply_in_progress = False
 
     async def silence_flusher() -> None:
-        """静音自动收尾：超过 0.8s 无音频则 flush 扣住的句尾（VAD 正式版在 3.1）。"""
-        nonlocal last_flush_at
+        """静音自动收尾：0.8s 无音频且转写非空 → flush → 触发回复管线。
+
+        门控语义：flushed 标志在新 PCM 到达时重置；空转写不消耗门控
+        （避免说话前静音期空触发导致真正的收尾被跳过）。
+        """
+        nonlocal flushed
+        tick = 0
         while True:
             await asyncio.sleep(0.2)
+            tick += 1
+            delta = time.monotonic() - last_speech_at
+            if tick % 10 == 0:  # 每 2 秒心跳诊断
+                logger.info(
+                    "flusher 心跳: session=%s state=%s reply=%s delta=%.2f flushed=%s "
+                    "utterance_len=%d",
+                    session is not None,
+                    session.engine.state if session and session.engine else None,
+                    reply_in_progress,
+                    delta,
+                    flushed,
+                    len(utterance),
+                )
             if (
                 session is not None
                 and session.engine is not None
+                and not reply_in_progress
                 and session.engine.state == EngineState.LISTENING
-                and time.monotonic() - last_audio_at > 0.8
-                and last_audio_at > last_flush_at
+                and delta > 0.8
+                and not flushed
+                and utterance
             ):
-                last_flush_at = time.monotonic()
+                flushed = True
                 session.engine.flush_asr()
+                text = "".join(utterance).strip()
+                utterance.clear()
+                if text:
+                    logger.info("完整转写: %s", text)
+                    await send_json({"type": "utterance", "text": text})
+                    asyncio.ensure_future(run_reply(text))
 
     flusher = asyncio.ensure_future(silence_flusher())
     try:
@@ -257,7 +384,16 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
 
             # 二进制消息 = 16k PCM16 音频帧（浏览器直传）
             if message.get("bytes") is not None:
-                last_audio_at = time.monotonic()
+                # 能量检测：PCM 持续到达（含静音），只有 RMS 超过阈值才算「说话」
+                arr = np.frombuffer(message["bytes"], dtype=np.int16)
+                rms = (
+                    float(np.sqrt(np.mean(arr.astype(np.float64) ** 2)))
+                    if len(arr)
+                    else 0.0
+                )
+                if rms >= _SILENCE_RMS:
+                    last_speech_at = time.monotonic()
+                    flushed = False  # 新语音到达，重置收尾门控
                 if session is not None and session.engine is not None:
                     session.engine.feed_audio(AudioFrame(data=message["bytes"]))
                 continue
@@ -279,7 +415,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                 manager.add(session)
                 session.engine = ConversationEngine()
                 session.engine.start()
-                _prepare_asr(session, websocket)
+                _prepare_asr(session, websocket, utterance, lambda: reply_in_progress)
                 await pc.setRemoteDescription(
                     RTCSessionDescription(sdp=msg["sdp"], type="offer")
                 )

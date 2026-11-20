@@ -9,22 +9,29 @@ import logging
 from collections.abc import AsyncIterator
 
 from callbot.engine.frames import AudioFrame
+from callbot.engine.text import has_content
 from callbot.providers.tts import StreamingTTS
 
 logger = logging.getLogger(__name__)
 
-_SEGMENT_PUNCT = ("。", "！", "？", "；", "\n")
+# 直接切分标点（中英文全集）
+_SEGMENT_PUNCT = ("。", "！", "？", "；", "、", "，", "：", "!", "?", ";", ",", ":", "\n")
 DEFAULT_MAX_CHARS = 20
 
 
 def split_segment(buffer: str, max_chars: int = DEFAULT_MAX_CHARS) -> tuple[str, str]:
     """从缓冲中切出一个可合成段。
 
-    规则：遇到句末标点即切（含标点）；无标点但达到 max_chars 也切；
-    否则不切。返回 (段, 剩余)。
+    规则：遇句末/停顿标点即切（含标点）；英文句点仅当后接空格或结尾才切
+    （防切断 3.5、U.S. 等）；无标点但达到 max_chars 也切。返回 (段, 剩余)。
     """
     for i, ch in enumerate(buffer):
+        nxt = buffer[i + 1] if i + 1 < len(buffer) else ""
         if ch in _SEGMENT_PUNCT:
+            return buffer[: i + 1], buffer[i + 1 :]
+        if ch in ("！", "？", "…"):  # 全角变体与省略号单字符
+            return buffer[: i + 1], buffer[i + 1 :]
+        if ch == "." and nxt in ("", " ", "\n", "，", "。", "！", "？"):
             return buffer[: i + 1], buffer[i + 1 :]
     if len(buffer) >= max_chars:
         return buffer[:max_chars], buffer[max_chars:]
@@ -60,8 +67,13 @@ class SpeechJoiner:
                 segment, rest = split_segment(buffer, self._max_chars)
                 if not segment:
                     break
-                logger.info("触发合成段: %s", segment)
-                async for frame in self._tts.synthesize(segment):
+                stripped = segment.strip()
+                if not has_content(stripped):
+                    # 纯换行/纯标点段跳过，避免空文本进 TTS 崩溃
+                    buffer = rest
+                    continue
+                logger.info("触发合成段: %s", stripped)
+                async for frame in self._tts.synthesize(stripped):
                     yield frame
                 buffer = rest
         # 流结束 flush 尾段

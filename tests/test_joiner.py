@@ -34,13 +34,38 @@ def test_split_by_threshold() -> None:
     assert split_segment("x" * 20 + "y", 20) == ("x" * 20, "y")
 
 
+def test_split_chinese_pause_punct() -> None:
+    """顿号逗号冒号均切分。"""
+    assert split_segment("abcd、efg", 20) == ("abcd、", "efg")
+    assert split_segment("ab，cd", 20) == ("ab，", "cd")
+    assert split_segment("ab：cd", 20) == ("ab：", "cd")
+
+
+def test_split_english_punct() -> None:
+    """英文逗号分号冒号切分；句点后接空格才切。"""
+    assert split_segment("ab, cd", 20) == ("ab,", " cd")
+    assert split_segment("ab; cd", 20) == ("ab;", " cd")
+    assert split_segment("ab: cd", 20) == ("ab:", " cd")
+
+
+def test_split_dot_guards_decimals() -> None:
+    """小数点/缩写不切断；句尾句点切分。"""
+    assert split_segment("3.5折优惠", 20) == ("", "3.5折优惠")
+    assert split_segment("好的. 下一步", 20) == ("好的.", " 下一步")
+
+
+def test_split_ellipsis() -> None:
+    """省略号切分。"""
+    assert split_segment("这个……那个", 20) == ("这个…", "…那个")
+
+
 async def test_joiner_segments_by_punctuation() -> None:
-    """按标点分段合成，尾段 flush。"""
+    """按标点分段合成（逗号顿号均切），尾段 flush。"""
     tts = FakeTTS()
     joiner = SpeechJoiner(tts)
     frames = [f async for f in joiner.run(_tokens("你好", "，我是", "助手。", "请问"))]
-    assert tts.synthesized == ["你好，我是助手。", "请问"]
-    assert len(frames) == 2
+    assert tts.synthesized == ["你好，", "我是助手。", "请问"]
+    assert len(frames) == 3
 
 
 async def test_joiner_threshold_without_punctuation() -> None:
@@ -59,3 +84,12 @@ async def test_joiner_empty_tail_not_synthesized() -> None:
     frames = [f async for f in joiner.run(_tokens("好的。"))]
     assert tts.synthesized == ["好的。"]
     assert len(frames) == 1
+
+
+async def test_joiner_skips_newline_only_segments() -> None:
+    """LLM 列表格式（：后换行）的纯换行段跳过，不送 TTS。"""
+    tts = FakeTTS()
+    joiner = SpeechJoiner(tts)
+    frames = [f async for f in joiner.run(_tokens("主要分这几块：\n", "\n第一点"))]
+    assert tts.synthesized == ["主要分这几块：", "第一点"]
+    assert len(frames) == 2

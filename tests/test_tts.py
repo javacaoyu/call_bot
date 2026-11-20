@@ -23,3 +23,12 @@ def test_tensor_to_audio_frame_clamps() -> None:
     samples = torch.tensor([[2.0, -2.0]])
     pcm = np.frombuffer(tensor_to_audio_frame(samples, 16000).data, dtype=np.int16)
     assert [int(x) for x in pcm] == [32767, -32767]
+
+
+async def test_synthesize_empty_text_skipped() -> None:
+    """空/纯空白文本直接返回，不加载模型不产出帧。"""
+    from callbot.providers.tts import CosyVoice2StreamingTTS
+
+    tts = CosyVoice2StreamingTTS()  # 未加载模型
+    frames = [f async for f in tts.synthesize("  \n ")]
+    assert frames == []

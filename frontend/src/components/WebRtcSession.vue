@@ -11,12 +11,15 @@ const devices = ref<MediaDeviceInfo[]>([]);
 const selectedDeviceId = ref("");
 const transcript = ref("");
 const statusDetail = ref("");
+const botReply = ref("");
 
 const signaling = new SignalingClient();
 let pc: RTCPeerConnection | null = null;
 let localStream: MediaStream | null = null;
 let audioCtx: AudioContext | null = null;
 let processor: ScriptProcessorNode | null = null;
+let playCtx: AudioContext | null = null;
+let nextPlayTime = 0;
 
 const SIGNAL_URL =
   (import.meta.env.VITE_SIGNAL_URL as string | undefined) ??
@@ -76,6 +79,32 @@ function stopPcmStream(): void {
   audioCtx = null;
 }
 
+/** 播放后端 TTS 音频帧（base64 → AudioBuffer → 顺序调度）。 */
+function playAudioFrame(data: string, sampleRate: number): void {
+  try {
+    if (!playCtx) {
+      playCtx = new AudioContext();
+      nextPlayTime = 0;
+    }
+    const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+    const pcm = new Int16Array(bytes.buffer);
+    const f32 = new Float32Array(pcm.length);
+    for (let i = 0; i < pcm.length; i++) {
+      f32[i] = pcm[i] / 32768;
+    }
+    const buffer = playCtx.createBuffer(1, f32.length, sampleRate);
+    buffer.copyToChannel(f32, 0);
+    const src = playCtx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(playCtx.destination);
+    const startAt = Math.max(nextPlayTime, playCtx.currentTime + 0.005);
+    src.start(startAt);
+    nextPlayTime = startAt + buffer.duration;
+  } catch {
+    // 音频解码失败静默（不影响转写显示）
+  }
+}
+
 async function connect(): Promise<void> {
   state.value = "connecting";
   error.value = "";
@@ -128,6 +157,13 @@ async function connect(): Promise<void> {
         transcript.value += msg.text ?? "";
       } else if (msg.type === "status") {
         statusDetail.value = msg.detail ?? "";
+      } else if (msg.type === "utterance") {
+        // 完整转写确认：机器人开始回复，清空上一轮回复
+        botReply.value = "";
+      } else if (msg.type === "reply") {
+        botReply.value += msg.text ?? "";
+      } else if (msg.type === "audio") {
+        playAudioFrame(msg.data ?? "", msg.sample_rate ?? 24000);
       }
     });
     signaling.onClose(() => {
@@ -157,6 +193,7 @@ function disconnect(): void {
   signaling.close();
   transcript.value = "";
   statusDetail.value = "";
+  botReply.value = "";
   state.value = "idle";
 }
 
@@ -180,8 +217,12 @@ onUnmounted(disconnect);
     <p v-if="statusDetail" class="status">⏳ {{ statusDetail }}</p>
     <p v-if="error" class="error">{{ error }}</p>
     <div class="transcript">
-      <div class="transcript-label">实时转写（流式 ASR）</div>
+      <div class="transcript-label">实时转写（你说的话）</div>
       <div class="transcript-text">{{ transcript || "（连接后请说话）" }}</div>
+    </div>
+    <div class="transcript bot">
+      <div class="transcript-label">机器人回复（文字 + 语音）</div>
+      <div class="transcript-text">{{ botReply || "（回复将显示在这里）" }}</div>
     </div>
     <audio ref="audioEl" autoplay></audio>
   </section>
@@ -207,5 +248,9 @@ onUnmounted(disconnect);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.transcript.bot {
+  background: #fef3c7;
 }
 </style>

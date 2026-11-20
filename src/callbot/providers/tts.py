@@ -12,6 +12,7 @@ from typing import Any, Protocol
 import torch
 
 from callbot.engine.frames import AudioFrame
+from callbot.engine.text import has_content
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,8 @@ class CosyVoice2StreamingTTS:
         speed: float = 1.0,
     ) -> AsyncIterator[AudioFrame]:
         """流式合成（instruct2 模式），逐块产出 24kHz PCM16 帧。"""
+        if not text.strip() or not has_content(text):
+            return  # 空文本/纯标点不进模型（CosyVoice 对空文本会崩）
         if self._model is None:
             raise RuntimeError("TTS 模型未加载，请先调用 load()")
         prompt = prompt_wav or self._default_prompt_wav

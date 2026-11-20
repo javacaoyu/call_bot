@@ -1,12 +1,23 @@
 /** WebRTC 信令客户端：与后端 /ws/signal 交换 offer/answer/ICE。 */
 
 export interface SignalMessage {
-  type: "offer" | "answer" | "ice" | "error" | "transcript" | "status";
+  type:
+    | "offer"
+    | "answer"
+    | "ice"
+    | "error"
+    | "transcript"
+    | "status"
+    | "utterance"
+    | "reply"
+    | "audio";
   sdp?: string;
   candidate?: RTCIceCandidateInit | null;
   detail?: string;
   text?: string;
   is_final?: boolean;
+  sample_rate?: number;
+  data?: string;
 }
 
 export class SignalingClient {

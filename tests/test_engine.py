@@ -41,6 +41,14 @@ def test_state_machine_callback() -> None:
     assert seen == [(EngineState.IDLE, EngineState.LISTENING)]
 
 
+def test_engine_mark_thinking() -> None:
+    """听 → 想 的显式转移。"""
+    engine = ConversationEngine()
+    engine.start()
+    engine.mark_thinking()
+    assert engine.state is EngineState.THINKING
+
+
 def test_engine_feed_count() -> None:
     """输入帧计数递增。"""
     engine = ConversationEngine()

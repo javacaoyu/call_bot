@@ -58,6 +58,10 @@ class ConversationEngine:
         """开始会话：进入 LISTENING。"""
         self._state.transition(EngineState.LISTENING)
 
+    def mark_thinking(self) -> None:
+        """用户说完 → 进入 THINKING（回复生成阶段，2.10 接入）。"""
+        self._state.transition(EngineState.THINKING)
+
     def feed_audio(self, frame: AudioFrame) -> None:
         """接收输入音频帧；累积满 600ms 后成块送入 ASR。"""
         if self._closed:
