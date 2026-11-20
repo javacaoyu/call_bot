@@ -28,12 +28,14 @@ class ConversationEngine:
 
     def __init__(self) -> None:
         self._state = StateMachine()
-        self._output: deque[AudioFrame] = deque()
+        self._output: deque[tuple[AudioFrame, str | None]] = deque()
         self._input_count = 0
         self._closed = False
         self._asr: StreamingASR | None = None
         self._asr_buffer = bytearray()
         self._on_transcript: TranscriptCallback | None = None
+        # 打断上下文重建（3.3）：本轮已完整说出的句子（段级，随段尾帧出队确认）
+        self._spoken_segments: list[str] = []
 
     @property
     def state(self) -> EngineState:
@@ -105,25 +107,57 @@ class ConversationEngine:
         self._emit(self._asr.process_chunk(silence, is_final=True))
         self._asr.reset()
 
-    def enqueue_output(self, frame: AudioFrame) -> None:
-        """投递输出音频帧（2.7 接入流式 TTS），并进入 SPEAKING。"""
+    def enqueue_output(self, frame: AudioFrame, text: str | None = None) -> None:
+        """投递输出音频帧（2.7 接入流式 TTS），并进入 SPEAKING。
+
+        text 为该帧所属合成段文本（joiner 段首帧携带，3.3 接入），
+        用于跟踪「已完整说出的句子」；None 表示段未知（向后兼容）。
+        """
         if self._closed:
             return
-        self._output.append(frame)
+        self._output.append((frame, text))
         if self._state.current != EngineState.SPEAKING:
             self._state.transition(EngineState.SPEAKING)
 
     def get_output_frame(self) -> AudioFrame | None:
-        """取一帧输出音频（FIFO）；队列取空且处于 SPEAKING 时回到 LISTENING。"""
-        if self._output:
-            return self._output.popleft()
-        if self._state.current == EngineState.SPEAKING:
-            self._state.transition(EngineState.LISTENING)
-        return None
+        """取一帧输出音频（FIFO）；队列取空且处于 SPEAKING 时回到 LISTENING。
+
+        段边界确认：出队帧是段尾（下一帧文本不同或无帧）→ 该段记入
+        spoken_segments；队列空视为自然说完，spoken 无需保留即清空
+        （打断场景才由 interrupt() 取快照）。
+        """
+        if not self._output:
+            if self._state.current == EngineState.SPEAKING:
+                self._state.transition(EngineState.LISTENING)
+            return None
+        frame, text = self._output.popleft()
+        if text is not None:
+            next_text = self._output[0][1] if self._output else None
+            if next_text != text:
+                self._spoken_segments.append(text)
+                if not self._output:
+                    self._spoken_segments.clear()
+        return frame
+
+    def interrupt(self) -> list[str]:
+        """打断（3.3 接入）：丢弃未播出音频、状态回 LISTENING。
+
+        Returns:
+            本轮已完整说出的句子（供上下文重建），同时重置追踪状态；
+            非 SPEAKING/THINKING 状态下调用无副作用并返回空列表。
+        """
+        if self._state.current not in (EngineState.SPEAKING, EngineState.THINKING):
+            return []
+        spoken = list(self._spoken_segments)
+        self._spoken_segments.clear()
+        self._output.clear()
+        self._state.interrupt()
+        return spoken
 
     def stop(self) -> None:
         """结束会话：flush ASR、清空输出并进入 CLOSED 终态。"""
         self.flush_asr()
         self._closed = True
         self._output.clear()
+        self._spoken_segments.clear()
         self._state.transition(EngineState.CLOSED)
