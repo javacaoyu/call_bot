@@ -76,20 +76,29 @@ class ConversationEngine:
             if result is not None and self._on_transcript is not None:
                 self._on_transcript(result)
 
-    def flush_asr(self) -> None:
-        """收尾：剩余缓存补静音凑整 600ms，以 is_final=True 送入 ASR 并重置缓存。
+    def _emit(self, result: ASRResult | None) -> None:
+        """转写结果非空时触发回调。"""
+        if result is not None and self._on_transcript is not None:
+            self._on_transcript(result)
 
-        注意：尾块过短时 FunASR 在线模型 is_final=True 返回空文本，
-        补静音凑整是实测可行的方案（尾部静音对转写无影响）。
+    def flush_asr(self) -> None:
+        """三段式收尾。
+
+        实测：paraformer 在线模型 is_final=True 不会释放解码器扣住的句尾
+        （表现为最后 1 个字/词延迟到下次说话才出现），继续喂入后续块才会释放。
+        因此：① 剩余真实音频以非 final 送入；② 追喂 2 块静音触发尾部释放；
+        ③ 静音块 is_final=True 收尾；最后重置缓存。
         """
         if self._asr is None:
             return
+        silence = AudioFrame(data=b"\x00" * _ASR_CHUNK_BYTES)
         if self._asr_buffer:
             data = bytes(self._asr_buffer).ljust(_ASR_CHUNK_BYTES, b"\x00")
             self._asr_buffer.clear()
-            result = self._asr.process_chunk(AudioFrame(data=data), is_final=True)
-            if result is not None and self._on_transcript is not None:
-                self._on_transcript(result)
+            self._emit(self._asr.process_chunk(AudioFrame(data=data), is_final=False))
+        for _ in range(2):
+            self._emit(self._asr.process_chunk(silence, is_final=False))
+        self._emit(self._asr.process_chunk(silence, is_final=True))
         self._asr.reset()
 
     def enqueue_output(self, frame: AudioFrame) -> None:

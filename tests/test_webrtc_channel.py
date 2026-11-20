@@ -1,11 +1,13 @@
 """WebRTC 信令校验与会话管理单元测试。"""
 
+import numpy as np
 from aiortc import RTCPeerConnection
 
 from callbot.channel.webrtc import (
     Session,
     SessionManager,
     _parse_ice_candidate,
+    resample_pcm_to_16k,
     validate_message,
 )
 
@@ -80,3 +82,18 @@ def test_parse_ice_invalid() -> None:
     assert _parse_ice_candidate({"candidate": "not a candidate"}) is None
     assert _parse_ice_candidate({"candidate": "candidate:too short"}) is None
     assert _parse_ice_candidate({}) is None
+
+
+def test_resample_48k_to_16k() -> None:
+    """48kHz 4800 样本 → 16kHz 1600 样本（3:1），保持 s16 单声道。"""
+    pcm = np.zeros((1, 4800), dtype=np.int16)
+    out = resample_pcm_to_16k(pcm, 48000)
+    assert out.dtype == np.int16
+    assert out.shape == (1600,)
+
+
+def test_resample_downmix_stereo() -> None:
+    """立体声输入应降混为单声道后重采样。"""
+    pcm = np.zeros((2, 9600), dtype=np.int16)
+    out = resample_pcm_to_16k(pcm, 48000)
+    assert out.shape == (3200,)

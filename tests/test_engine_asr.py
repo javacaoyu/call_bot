@@ -50,8 +50,8 @@ def test_feed_across_chunk_boundary() -> None:
     assert len(engine._asr_buffer) == 640
 
 
-def test_flush_sends_remainder_with_final() -> None:
-    """flush 把剩余缓存补静音凑整 600ms，以 is_final=True 送入并重置 ASR。"""
+def test_flush_three_stage_releases_tail() -> None:
+    """flush 三段式：剩余音频非 final + 静音×2 释放尾字 + final 收尾，随后重置。"""
     engine = ConversationEngine()
     asr = FakeASR()
     engine.attach_asr(asr)
@@ -59,7 +59,25 @@ def test_flush_sends_remainder_with_final() -> None:
     for _ in range(10):
         engine.feed_audio(_make_frame(20))
     engine.flush_asr()
-    assert asr.chunks == [(19200, True)]  # 6400 字节补零到整块
+    # ① 6400 字节真实音频补零到 600ms（非 final）
+    # ② 2 块静音（非 final）③ 1 块静音（final）
+    assert asr.chunks == [
+        (19200, False),
+        (19200, False),
+        (19200, False),
+        (19200, True),
+    ]
+    assert asr.reset_calls == 1
+
+
+def test_flush_empty_buffer_still_finalizes() -> None:
+    """缓存为空时仍走静音三段收尾（释放解码器句尾）。"""
+    engine = ConversationEngine()
+    asr = FakeASR()
+    engine.attach_asr(asr)
+    engine.start()
+    engine.flush_asr()
+    assert asr.chunks == [(19200, False), (19200, False), (19200, True)]
     assert asr.reset_calls == 1
 
 
