@@ -32,6 +32,13 @@
 4. 合规内置：录音留存、时段/频次/黑名单、敏感词拦截。
 5. 媒体无关：内核只处理 PCM 音频帧 + 文本事件，电话通道作为后期 Adapter 接入。
 
+## 音频链路约束（实测教训，勿走回头路）
+
+- **Web 端音频传输必须走 PCM 直传**：浏览器 `AudioContext(16000)` 采集 → int16 二进制帧经信令 WebSocket 直传后端 → 引擎。**不要用 aiortc 音轨承载音频**——本环境（联想立体声麦克风阵列 + Chrome）下 aiortc 的 opus 解码输出损坏音频（48k 假标签 + 逐样本重复，听感「慢放猪叫」，ASR 完全无法识别）；WebRTC 仅用于连接建立（offer/answer/ICE）。
+- **getUserMedia 约束**：`echoCancellation/noiseSuppression/autoGainControl = false`；设备默认优先真实麦克风（排除 LegionZone 等虚拟设备）。
+- **paraformer 在线模型输出约定**：每 chunk 吐「增量文本」，完整转写 = 全部增量拼接；`is_final=True` **不会**释放解码器扣住的句尾（表现为尾字延迟到下次说话）——收尾必须三段式：剩余真实音频（非 final）→ 追喂 2 块静音释放句尾 → 静音块 final 收尾 → reset。`engine.flush_asr()` 已实现，勿简化为单次 final。
+- **静音自动收尾**：后端监测 PCM 流，静音超 0.8s 触发 flush（正式 VAD 在 WBS 3.1 接入）。
+
 ## 开发环境（本项目）
 
 - Python 用 UV；Docker 在 WSL Ubuntu；开发机 GPU 为 RTX 4060 8GB。
@@ -62,6 +69,7 @@ export LD_LIBRARY_PATH=$(find .venv/lib/python3.12/site-packages/nvidia -name li
 - **uv sync 会重置 venv** 为 pyproject+lock 的声明集合：临时 `uv pip install` 的包若不写进 pyproject，下次 sync 会被清掉。
 - **后台任务命令不要接管道**（`| tail` 等会掩盖退出码，已两次误判「失败」为「成功」）；大模型下载/安装任务完成后必须核对输出文件确认真成功。
 - pkill -f 的模式会匹配自身 shell 命令行导致误杀自己，改用精确 PID 或进程名。
+- Bash 会话的 cwd 会漂移（`cd` 不持久，background 命令的 cd 不生效）：运行 pytest/uv/git 前先 `cd /home/caoyu/call_bot` 或检查当前目录（在 frontend/ 下跑 pytest 会「收集 0 个测试」、相对模型路径会失效）。
 
 ## 提交约定
 
