@@ -19,6 +19,6 @@ class Settings(BaseSettings):
     app_name: str = "callbot"
     env: str = "dev"
     log_level: str = "INFO"
-    # 默认指向 docker-compose 起的本地库（1.2 产物，凭据见 .env.example）
-    db_url: str = "postgresql://voicebot:voicebot@127.0.0.1:5432/voicebot"
+    # 默认指向 docker-compose 起的本地库（凭据见 .env.example）
+    db_url: str = "postgresql://callbot:callbot@127.0.0.1:5432/callbot"
     models_dir: str = "models"

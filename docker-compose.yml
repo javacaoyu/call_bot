@@ -1,19 +1,19 @@
 services:
   db:
     image: pgvector/pgvector:pg16
-    container_name: voicebot-db
+    container_name: callbot-db
     restart: unless-stopped
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-voicebot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-voicebot}
-      POSTGRES_DB: ${POSTGRES_DB:-voicebot}
+      POSTGRES_USER: ${POSTGRES_USER:-callbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-callbot}
+      POSTGRES_DB: ${POSTGRES_DB:-callbot}
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voicebot} -d ${POSTGRES_DB:-voicebot}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-callbot} -d ${POSTGRES_DB:-callbot}"]
       interval: 5s
       timeout: 3s
       retries: 10
