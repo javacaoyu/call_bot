@@ -22,6 +22,7 @@ secrets/
 # 本地模型权重与大数据（不进 git）
 models/
 checkpoints/
+third_party/
 *.safetensors
 *.bin
 *.onnx
