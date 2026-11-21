@@ -27,6 +27,10 @@ _MATCHA_DIR = _PROJECT_ROOT / "third_party" / "Matcha-TTS"
 class StreamingTTS(Protocol):
     """流式 TTS Provider 接口（本地 / 云端实现均遵循）。"""
 
+    def load(self) -> None:
+        """加载模型/初始化连接（懒加载、幂等；耗时操作放线程）。"""
+        ...
+
     def synthesize(
         self,
         text: str,

@@ -37,3 +37,19 @@ def test_settings_vad_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(_env_file=None)
     assert settings.vad_min_speech_ms == 120
     assert settings.vad_min_silence_ms == 300
+
+
+def test_settings_provider_kinds() -> None:
+    """三环节 kind 默认值与环境覆盖（4.1 工厂配置入口）。"""
+    settings = Settings(_env_file=None)
+    assert settings.asr_kind == "funasr"
+    assert settings.tts_kind == "cosyvoice"
+
+
+def test_settings_provider_kind_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CALLBOT_ASR_KIND / CALLBOT_TTS_KIND 环境变量覆盖。"""
+    monkeypatch.setenv("CALLBOT_ASR_KIND", "xfyun")
+    monkeypatch.setenv("CALLBOT_TTS_KIND", "aliyun")
+    settings = Settings(_env_file=None)
+    assert settings.asr_kind == "xfyun"
+    assert settings.tts_kind == "aliyun"

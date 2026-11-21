@@ -35,32 +35,33 @@ from callbot.engine.joiner import SpeechJoiner
 from callbot.engine.state import EngineState
 from callbot.engine.vad import SileroVAD, VADEvent
 from callbot.orchestration.orchestrator import Orchestrator, create_orchestrator
-from callbot.providers.asr import ASRResult, FunASRStreamingASR
-from callbot.providers.tts import CosyVoice2StreamingTTS
+from callbot.providers.asr import ASRResult, StreamingASR
+from callbot.providers.base import ProviderConfig, create_asr, create_tts
+from callbot.providers.tts import StreamingTTS
 
 logger = logging.getLogger(__name__)
 
 SignalMessage = dict[str, Any]
 
 # 进程级模型单例（GPU 常驻，多路会话共享）
-_SHARED_ASR: FunASRStreamingASR | None = None
-_SHARED_TTS: CosyVoice2StreamingTTS | None = None
+_SHARED_ASR: StreamingASR | None = None
+_SHARED_TTS: StreamingTTS | None = None
 
 
-def get_shared_asr() -> FunASRStreamingASR:
-    """获取进程级 FunASR 单例（首次调用触发模型加载，约 10~20s）。"""
+def get_shared_asr(settings: Settings) -> StreamingASR:
+    """获取进程级 ASR 单例（工厂按 asr_kind 分发；首次调用触发模型加载）。"""
     global _SHARED_ASR
     if _SHARED_ASR is None:
-        _SHARED_ASR = FunASRStreamingASR()
+        _SHARED_ASR = create_asr(ProviderConfig(kind=settings.asr_kind))
         _SHARED_ASR.load()
     return _SHARED_ASR
 
 
-def get_shared_tts() -> CosyVoice2StreamingTTS:
-    """获取进程级 CosyVoice2 单例（首次调用触发模型加载，约 10~30s）。"""
+def get_shared_tts(settings: Settings) -> StreamingTTS:
+    """获取进程级 TTS 单例（工厂按 tts_kind 分发；首次调用触发模型加载）。"""
     global _SHARED_TTS
     if _SHARED_TTS is None:
-        _SHARED_TTS = CosyVoice2StreamingTTS()
+        _SHARED_TTS = create_tts(ProviderConfig(kind=settings.tts_kind))
         _SHARED_TTS.load()
     return _SHARED_TTS
 
@@ -207,6 +208,7 @@ def _prepare_models(  # noqa: ANN001
     utterance: list[str],
     reply_active: callable,
     vad: SileroVAD,
+    settings: Settings,
 ) -> asyncio.Task[None]:
     """异步准备模型：加载 ASR + VAD（线程内）并挂到会话引擎。
 
@@ -216,6 +218,7 @@ def _prepare_models(  # noqa: ANN001
         utterance: 当前轮转写累积缓冲（完整转写用）。
         reply_active: 返回机器人是否正在回复（半双工门控）。
         vad: 本会话 VAD 实例（状态机在 handle_signaling 中消费）。
+        settings: 全局配置（ASR 工厂 kind 分发）。
     """
 
     def send_transcript(result: ASRResult) -> None:
@@ -243,7 +246,7 @@ def _prepare_models(  # noqa: ANN001
             )
         except Exception:  # noqa: BLE001
             pass
-        asr = await asyncio.to_thread(get_shared_asr)  # 模型加载放线程避免阻塞事件循环
+        asr = await asyncio.to_thread(get_shared_asr, settings)  # 加载放线程避免阻塞事件循环
         await asyncio.to_thread(vad.load)  # VAD 模型 2MB，秒级加载
         try:
             await websocket.send_text(
@@ -314,7 +317,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                     api_key=settings.llm_api_key,
                     model=settings.llm_model,
                 )
-            tts = await asyncio.to_thread(get_shared_tts)
+            tts = await asyncio.to_thread(get_shared_tts, settings)
             joiner = SpeechJoiner(tts)
             engine.mark_thinking()
 
@@ -424,7 +427,9 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                 manager.add(session)
                 session.engine = ConversationEngine()
                 session.engine.start()
-                _prepare_models(session, websocket, utterance, lambda: reply_in_progress, vad)
+                _prepare_models(
+                    session, websocket, utterance, lambda: reply_in_progress, vad, settings
+                )
                 await pc.setRemoteDescription(
                     RTCSessionDescription(sdp=msg["sdp"], type="offer")
                 )

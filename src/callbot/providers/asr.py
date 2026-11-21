@@ -25,6 +25,10 @@ class ASRResult:
 class StreamingASR(Protocol):
     """流式 ASR Provider 接口（本地 / 云端实现均遵循）。"""
 
+    def load(self) -> None:
+        """加载模型/初始化连接（懒加载、幂等；耗时操作放线程）。"""
+        ...
+
     def process_chunk(self, frame: AudioFrame, is_final: bool = False) -> ASRResult | None:
         """送入一块 16k PCM16 音频，返回本次转写（无新文本时返回 None）。"""
         ...
