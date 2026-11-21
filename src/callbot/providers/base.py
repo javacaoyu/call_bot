@@ -40,22 +40,47 @@ class ModelProvider(Protocol):
 
 
 def create_asr(cfg: ProviderConfig) -> StreamingASR:
-    """ASR 工厂：按 kind 分发（4.2 云端实现接入时扩充分支）。"""
+    """ASR 工厂：按 kind 分发（funasr 本地；xfyun/volc 云端 4.2 接入）。"""
     if cfg.kind == "funasr":
         from callbot.providers.asr import FunASRStreamingASR
 
         return FunASRStreamingASR(
             model_dir=cfg.params.get("model_dir", "models/paraformer-zh-streaming")
         )
+    if cfg.kind == "xfyun":
+        from callbot.providers.cloud.xfyun_asr import XfyunStreamingASR
+
+        return XfyunStreamingASR(
+            app_id=cfg.params.get("app_id", ""),
+            api_key=cfg.api_key,
+            api_secret=cfg.params.get("api_secret", ""),
+        )
+    if cfg.kind == "volc":
+        from callbot.providers.cloud.volc_asr import VolcStreamingASR
+
+        return VolcStreamingASR(
+            api_key=cfg.api_key,
+            resource_id=cfg.params.get("resource_id", "volc.seedasr.sauc.duration"),
+        )
     raise ValueError(f"未知 ASR provider: {cfg.kind}")
 
 
 def create_tts(cfg: ProviderConfig) -> StreamingTTS:
-    """TTS 工厂：按 kind 分发（4.2 云端实现接入时扩充分支）。"""
+    """TTS 工厂：按 kind 分发（cosyvoice 本地；aliyun 云端 4.2 接入）。"""
     if cfg.kind == "cosyvoice":
         from callbot.providers.tts import CosyVoice2StreamingTTS
 
         return CosyVoice2StreamingTTS()
+    if cfg.kind == "aliyun":
+        from callbot.providers.cloud.aliyun_tts import AliyunStreamingTTS
+
+        return AliyunStreamingTTS(
+            appkey=cfg.params.get("appkey", ""),
+            token=cfg.params.get("token", ""),
+            access_key_id=cfg.params.get("access_key_id", ""),
+            access_key_secret=cfg.params.get("access_key_secret", ""),
+            voice=cfg.params.get("voice", "longxiaochun"),
+        )
     raise ValueError(f"未知 TTS provider: {cfg.kind}")
 
 

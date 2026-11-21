@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -27,6 +28,12 @@ class StreamingASR(Protocol):
 
     def load(self) -> None:
         """加载模型/初始化连接（懒加载、幂等；耗时操作放线程）。"""
+        ...
+
+    def set_callback(
+        self, callback: Callable[[ASRResult], None] | None
+    ) -> None:
+        """注册增量转写回调（云端实现结果异步到达时直推；本地实现可空实现）。"""
         ...
 
     def process_chunk(self, frame: AudioFrame, is_final: bool = False) -> ASRResult | None:
@@ -60,6 +67,11 @@ class FunASRStreamingASR:
 
         logger.info("加载 FunASR 模型 %s", self._model_dir)
         self._model = AutoModel(model=self._model_dir, disable_update=True)
+
+    def set_callback(
+        self, callback: Callable[[ASRResult], None] | None
+    ) -> None:
+        """本地实现结果同步返回，无需回调（满足 Protocol 的空实现）。"""
 
     def process_chunk(self, frame: AudioFrame, is_final: bool = False) -> ASRResult | None:
         """送入一块音频，返回本次转写结果（无新文本时 None）。"""

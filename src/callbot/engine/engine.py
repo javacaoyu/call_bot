@@ -52,9 +52,16 @@ class ConversationEngine:
         asr: StreamingASR,
         on_transcript: TranscriptCallback | None = None,
     ) -> None:
-        """挂载流式 ASR 与转写回调（不挂载时 feed_audio 仅计数）。"""
+        """挂载流式 ASR 与转写回调（不挂载时 feed_audio 仅计数）。
+
+        云端 ASR 的结果异步到达，经其 set_callback 直推；本地实现
+        结果由 process_chunk 同步返回，回调用于两条路径的统一出口。
+        """
         self._asr = asr
         self._on_transcript = on_transcript
+        setter = getattr(asr, "set_callback", None)
+        if callable(setter):
+            setter(on_transcript)
 
     def start(self) -> None:
         """开始会话：进入 LISTENING。"""
