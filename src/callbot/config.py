@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-chat"
     # 编排层后端：agentscope（默认）| simple（自建 fallback）
     orchestration_backend: str = "agentscope"
-    # VAD（WBS 3.1）：Silero 模型路径与语音概率阈值（相对路径基于项目根）
+    # VAD（WBS 3.1/3.4）：Silero 模型路径与灵敏度参数（相对路径基于项目根）。
+    # min_speech_ms 为起音观察窗 = 打断灵敏度核心旋钮（越小打断越快但越易误触发）；
+    # min_silence_ms 为端点静音容忍。
     vad_model_path: str = "models/silero_vad.jit"
     vad_threshold: float = 0.5
+    vad_min_speech_ms: int = 250
+    vad_min_silence_ms: int = 400

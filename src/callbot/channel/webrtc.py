@@ -12,6 +12,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -265,7 +266,12 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
     """
     settings = Settings()
     session: Session | None = None
-    vad = SileroVAD(model_path=settings.vad_model_path, threshold=settings.vad_threshold)
+    vad = SileroVAD(
+        model_path=settings.vad_model_path,
+        threshold=settings.vad_threshold,
+        min_speech_ms=settings.vad_min_speech_ms,
+        min_silence_ms=settings.vad_min_silence_ms,
+    )
     flushed = False
     utterance: list[str] = []
     reply_in_progress = False
@@ -340,12 +346,12 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
             await send_json({"type": "status", "detail": "回复失败，请重试"})
             reply_in_progress = False
 
-    async def handle_interrupt() -> None:
+    async def handle_interrupt(started_at: float) -> None:
         """打断动作链（3.3）：停音频 + 关 LLM 流 + 暂存已说句子。
 
         顺序：引擎清未播队列（拿「已完整说出的句子」快照）→ drain 退出 →
         cancel 回复 task（token 流 aclose → LLM 关流）→ 前端 stop_audio
-        立即停播已调度的帧。
+        立即停播已调度的帧。started_at 为 VAD 起音判定的时刻（埋点计时）。
         """
         nonlocal reply_in_progress, pending_spoken
         engine = session.engine
@@ -357,8 +363,12 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
         if reply_task is not None:
             reply_task.cancel()
         await send_json({"type": "stop_audio"})
-        if spoken:
-            logger.info("打断：已说 %d 句将并入上下文", len(spoken))
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        logger.info(
+            "打断链路完成: %.1fms（起音判定后→stop_audio 发出），已说 %d 句",
+            elapsed_ms,
+            len(spoken),
+        )
 
     try:
         while True:
@@ -373,7 +383,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                 if event is VADEvent.SPEECH_START:
                     flushed = False  # 新语音段到达，重置收尾门控
                     if reply_in_progress:
-                        asyncio.ensure_future(handle_interrupt())
+                        asyncio.ensure_future(handle_interrupt(time.perf_counter()))
                 elif event is VADEvent.SPEECH_END:
                     engine = session.engine if session else None
                     if (

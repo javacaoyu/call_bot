@@ -111,3 +111,22 @@ def test_reset_clears_state() -> None:
     vad.reset()
     assert not vad.in_speech
     assert vad.process_frame(_frame_of_n_blocks(7, value=1)) is None  # 未达标不发事件
+
+
+def test_tunable_min_speech_onset() -> None:
+    """min_speech_ms 参数化（3.4 打断灵敏度旋钮）：120ms → 4 块即起音。"""
+    vad = _make_vad([_SPEECH] * 8)
+    vad._min_speech_ms = 120  # noqa: SLF001 - 参数化验证
+    event = vad.process_frame(_frame_of_n_blocks(4))  # 4 块 = 128ms ≥ 120ms
+    assert event is VADEvent.SPEECH_START
+    assert vad.in_speech
+
+
+def test_tunable_min_silence_endpoint() -> None:
+    """min_silence_ms 参数化：300ms → 10 块（320ms）判定端点。"""
+    vad = _make_vad([_SPEECH] * 8)
+    vad.process_frame(_frame_of_n_blocks(8))
+    vad._min_silence_ms = 300  # noqa: SLF001 - 参数化验证
+    event = vad.process_frame(_frame_of_n_blocks(10))
+    assert event is VADEvent.SPEECH_END
+    assert not vad.in_speech

@@ -56,7 +56,7 @@ async function refreshDevices(): Promise<void> {
 function startPcmStream(stream: MediaStream): void {
   audioCtx = new AudioContext({ sampleRate: 16000 });
   const source = audioCtx.createMediaStreamSource(stream);
-  processor = audioCtx.createScriptProcessor(1024, 1, 1);
+  processor = audioCtx.createScriptProcessor(512, 1, 1); // 32ms@16k：降低打断帧边界延迟
   processor.onaudioprocess = (e) => {
     const input = e.inputBuffer.getChannelData(0);
     const buf = new Int16Array(input.length);
