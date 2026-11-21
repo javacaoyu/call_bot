@@ -2,12 +2,15 @@
 
 import pytest
 
+from callbot.config import Settings
 from callbot.providers.asr import FunASRStreamingASR
 from callbot.providers.base import (
     ProviderConfig,
+    asr_config_from_settings,
     create_asr,
     create_llm,
     create_tts,
+    tts_config_from_settings,
 )
 from callbot.providers.llm import DeepSeekStreamingLLM
 from callbot.providers.tts import CosyVoice2StreamingTTS
@@ -61,3 +64,100 @@ def test_create_llm_passthrough() -> None:
     assert isinstance(llm, DeepSeekStreamingLLM)
     assert llm._model == "m"  # noqa: SLF001
     assert str(llm._client.base_url) == "http://x"  # noqa: SLF001 - AsyncOpenAI 归一化
+
+
+def _settings(**overrides: str) -> Settings:
+    return Settings(_env_file=None, **overrides)
+
+
+def test_asr_config_funasr_default() -> None:
+    """默认本地 kind：无密钥要求。"""
+    cfg = asr_config_from_settings(_settings())
+    assert cfg == ProviderConfig(kind="funasr")
+
+
+def test_asr_config_xfyun_mapping() -> None:
+    """xfyun：三件套映射到 ProviderConfig。"""
+    cfg = asr_config_from_settings(
+        _settings(
+            asr_kind="xfyun",
+            asr_app_id="app",
+            asr_api_key="key",
+            asr_api_secret="secret",
+        )
+    )
+    assert cfg.kind == "xfyun"
+    assert cfg.api_key == "key"
+    assert cfg.params == {"app_id": "app", "api_secret": "secret"}
+
+
+def test_asr_config_xfyun_missing_key() -> None:
+    """xfyun 缺密钥报错并提示 env 名。"""
+    with pytest.raises(ValueError, match="CALLBOT_ASR_APP_ID"):
+        asr_config_from_settings(
+            _settings(asr_kind="xfyun", asr_api_key="k", asr_api_secret="s")
+        )
+    with pytest.raises(ValueError, match="CALLBOT_ASR_API_KEY"):
+        asr_config_from_settings(
+            _settings(asr_kind="xfyun", asr_app_id="a", asr_api_secret="s")
+        )
+
+
+def test_asr_config_volc_mapping() -> None:
+    """volc：api_key + 默认 resource_id。"""
+    cfg = asr_config_from_settings(_settings(asr_kind="volc", asr_api_key="k"))
+    assert cfg.kind == "volc"
+    assert cfg.api_key == "k"
+    assert cfg.params["resource_id"] == "volc.seedasr.sauc.duration"
+    with pytest.raises(ValueError, match="CALLBOT_ASR_API_KEY"):
+        asr_config_from_settings(_settings(asr_kind="volc"))
+
+
+def test_asr_config_unknown_kind() -> None:
+    """未知 kind 报错。"""
+    with pytest.raises(ValueError, match="未知 ASR provider"):
+        asr_config_from_settings(_settings(asr_kind="nope"))
+
+
+def test_tts_config_cosyvoice_default() -> None:
+    """默认本地 kind：无密钥要求。"""
+    cfg = tts_config_from_settings(_settings())
+    assert cfg == ProviderConfig(kind="cosyvoice")
+
+
+def test_tts_config_aliyun_token() -> None:
+    """aliyun：token 直配优先映射。"""
+    cfg = tts_config_from_settings(
+        _settings(tts_kind="aliyun", tts_appkey="app", tts_token="tok")
+    )
+    assert cfg.kind == "aliyun"
+    assert cfg.params["appkey"] == "app"
+    assert cfg.params["token"] == "tok"
+
+
+def test_tts_config_aliyun_missing_auth() -> None:
+    """aliyun 缺 appkey 或双鉴权均缺时报错。"""
+    with pytest.raises(ValueError, match="CALLBOT_TTS_APPKEY"):
+        tts_config_from_settings(_settings(tts_kind="aliyun", tts_token="t"))
+    with pytest.raises(ValueError, match="CALLBOT_TTS_TOKEN"):
+        tts_config_from_settings(_settings(tts_kind="aliyun", tts_appkey="a"))
+
+
+def test_tts_config_aliyun_ak_sk() -> None:
+    """aliyun：AK/SK 路径也可通过校验。"""
+    cfg = tts_config_from_settings(
+        _settings(
+            tts_kind="aliyun",
+            tts_appkey="app",
+            tts_access_key_id="ak",
+            tts_access_key_secret="sk",
+        )
+    )
+    assert cfg.params["access_key_id"] == "ak"
+    assert cfg.params["voice"] == "longxiaochun"
+
+
+def test_tts_config_unknown_kind() -> None:
+    """未知 kind 报错。"""
+    with pytest.raises(ValueError, match="未知 TTS provider"):
+        tts_config_from_settings(_settings(tts_kind="nope"))

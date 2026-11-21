@@ -36,7 +36,12 @@ from callbot.engine.state import EngineState
 from callbot.engine.vad import SileroVAD, VADEvent
 from callbot.orchestration.orchestrator import Orchestrator, create_orchestrator
 from callbot.providers.asr import ASRResult, StreamingASR
-from callbot.providers.base import ProviderConfig, create_asr, create_tts
+from callbot.providers.base import (
+    asr_config_from_settings,
+    create_asr,
+    create_tts,
+    tts_config_from_settings,
+)
 from callbot.providers.tts import StreamingTTS
 
 logger = logging.getLogger(__name__)
@@ -49,19 +54,19 @@ _SHARED_TTS: StreamingTTS | None = None
 
 
 def get_shared_asr(settings: Settings) -> StreamingASR:
-    """获取进程级 ASR 单例（工厂按 asr_kind 分发；首次调用触发模型加载）。"""
+    """获取进程级 ASR 单例（kind 配置驱动切换；首次调用触发模型加载）。"""
     global _SHARED_ASR
     if _SHARED_ASR is None:
-        _SHARED_ASR = create_asr(ProviderConfig(kind=settings.asr_kind))
+        _SHARED_ASR = create_asr(asr_config_from_settings(settings))
         _SHARED_ASR.load()
     return _SHARED_ASR
 
 
 def get_shared_tts(settings: Settings) -> StreamingTTS:
-    """获取进程级 TTS 单例（工厂按 tts_kind 分发；首次调用触发模型加载）。"""
+    """获取进程级 TTS 单例（kind 配置驱动切换；首次调用触发模型加载）。"""
     global _SHARED_TTS
     if _SHARED_TTS is None:
-        _SHARED_TTS = create_tts(ProviderConfig(kind=settings.tts_kind))
+        _SHARED_TTS = create_tts(tts_config_from_settings(settings))
         _SHARED_TTS.load()
     return _SHARED_TTS
 
@@ -250,7 +255,15 @@ def _prepare_models(  # noqa: ANN001
         await asyncio.to_thread(vad.load)  # VAD 模型 2MB，秒级加载
         try:
             await websocket.send_text(
-                json.dumps({"type": "status", "detail": "模型就绪，请开始说话"})
+                json.dumps(
+                    {
+                        "type": "status",
+                        "detail": (
+                            "模型就绪，请开始说话"
+                            f"（ASR={settings.asr_kind} / TTS={settings.tts_kind}）"
+                        ),
+                    }
+                )
             )
         except Exception:  # noqa: BLE001
             pass
