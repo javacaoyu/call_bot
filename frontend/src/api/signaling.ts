@@ -11,7 +11,8 @@ export interface SignalMessage {
     | "utterance"
     | "reply"
     | "audio"
-    | "stop_audio";
+    | "stop_audio"
+    | "playback_done";
   sdp?: string;
   candidate?: RTCIceCandidateInit | null;
   detail?: string;
@@ -19,6 +20,7 @@ export interface SignalMessage {
   is_final?: boolean;
   sample_rate?: number;
   data?: string;
+  seq?: number;
 }
 
 export class SignalingClient {

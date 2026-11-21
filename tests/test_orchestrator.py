@@ -132,3 +132,32 @@ async def test_agentscope_empty_prefix_no_observe() -> None:
     out = [t async for t in orch.stream_reply("hi")]
     assert out == ["好的"]
     assert orch._agent.observed == []
+
+
+async def test_simple_interrupted_with_zero_spoken_injects_placeholder() -> None:
+    """打断轮且已说 0 句：注入占位 assistant，保持 user→assistant 形态。"""
+    llm = FakeLLM(["好"])
+    orch = SimpleOrchestrator(llm=llm, system_prompt="sys")
+    _ = [t async for t in orch.stream_reply("新问题", spoken_prefix="")]
+    msgs = llm.calls[0]
+    assert msgs[-2] == {"role": "assistant", "content": "（上一句回复被打断）"}
+    assert msgs[-1] == {"role": "user", "content": "新问题"}
+
+
+async def test_simple_normal_turn_no_placeholder() -> None:
+    """正常轮（None）不注入占位。"""
+    llm = FakeLLM(["好"])
+    orch = SimpleOrchestrator(llm=llm, system_prompt="sys")
+    _ = [t async for t in orch.stream_reply("你好")]
+    roles = [m["role"] for m in llm.calls[0]]
+    assert roles.count("assistant") == 0  # 首轮正常无 assistant 历史
+
+
+async def test_agentscope_interrupted_zero_spoken_placeholder() -> None:
+    """AgentScope：打断轮空串也 observe 占位 assistant。"""
+    orch = AgentScopeOrchestrator(base_url="x", api_key="k", model="m")
+    orch._agent = FakeAgent()  # noqa: SLF001
+    _ = [t async for t in orch.stream_reply("新问题", spoken_prefix="")]
+    (msg,) = orch._agent.observed
+    assert msg.role == "assistant"
+    assert msg.content[0].text == "（上一句回复被打断）"

@@ -22,6 +22,9 @@ let playCtx: AudioContext | null = null;
 let nextPlayTime = 0;
 // 已调度的播放源：打断时立即停止（已排队未播 + 正在播的）
 const activeSources: AudioBufferSourceNode[] = [];
+// 播放确认：向后端报告最后播到的帧序号（打断窗口 = 前端播报中）
+let lastAudioSeq = 0;
+let audioQueued = false;
 
 const SIGNAL_URL =
   (import.meta.env.VITE_SIGNAL_URL as string | undefined) ??
@@ -82,12 +85,14 @@ function stopPcmStream(): void {
 }
 
 /** 播放后端 TTS 音频帧（base64 → AudioBuffer → 顺序调度）。 */
-function playAudioFrame(data: string, sampleRate: number): void {
+function playAudioFrame(data: string, sampleRate: number, seq: number): void {
   try {
     if (!playCtx) {
       playCtx = new AudioContext();
       nextPlayTime = 0;
     }
+    lastAudioSeq = seq;
+    audioQueued = true;
     const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
     const pcm = new Int16Array(bytes.buffer);
     const f32 = new Float32Array(pcm.length);
@@ -106,9 +111,18 @@ function playAudioFrame(data: string, sampleRate: number): void {
     src.onended = () => {
       const i = activeSources.indexOf(src);
       if (i >= 0) activeSources.splice(i, 1);
+      confirmPlaybackDone();
     };
   } catch {
     // 音频解码失败静默（不影响转写显示）
+  }
+}
+
+/** 播放队列清空（自然播完或被 stop）后，向后端确认已播到的帧序号。 */
+function confirmPlaybackDone(): void {
+  if (activeSources.length === 0 && audioQueued) {
+    audioQueued = false;
+    signaling.send({ type: "playback_done", seq: lastAudioSeq });
   }
 }
 
@@ -123,6 +137,9 @@ function stopPlayback(): void {
   }
   activeSources.length = 0;
   nextPlayTime = 0;
+  // stop 后 onended 同步触发 → confirmPlaybackDone 会发出确认；
+  // 这里兜底再发一次（幂等，后端取 max）
+  confirmPlaybackDone();
 }
 
 async function connect(): Promise<void> {
@@ -183,7 +200,7 @@ async function connect(): Promise<void> {
       } else if (msg.type === "reply") {
         botReply.value += msg.text ?? "";
       } else if (msg.type === "audio") {
-        playAudioFrame(msg.data ?? "", msg.sample_rate ?? 24000);
+        playAudioFrame(msg.data ?? "", msg.sample_rate ?? 24000, msg.seq ?? 0);
       } else if (msg.type === "stop_audio") {
         // 打断：立即停播（后端已清未发队列）
         stopPlayback();

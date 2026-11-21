@@ -21,16 +21,22 @@ from callbot.providers.llm import ChatMessage, DeepSeekStreamingLLM
 logger = logging.getLogger(__name__)
 
 
+# 打断轮且已说 0 句时的 assistant 占位：保持历史形态（user→assistant→user），
+# 否则模型看到连续多条 user 消息无人回复，会逐个补答历史问题
+_INTERRUPTED_PLACEHOLDER = "（上一句回复被打断）"
+
+
 class Orchestrator(Protocol):
     """编排层接口（纯文字进、纯文字出）。"""
 
     def stream_reply(
-        self, user_text: str, spoken_prefix: str = ""
+        self, user_text: str, spoken_prefix: str | None = None
     ) -> AsyncIterator[str]:
         """根据用户文本流式生成回复；关闭生成器即停止生成。
 
-        spoken_prefix：打断上下文重建（3.3）——机器人本轮「已完整说出的
-        句子」，作为 assistant 历史注入；正常轮次为空字符串。
+        spoken_prefix：打断上下文重建（3.3）——打断轮的下一轮传入机器人
+        「已完整说出的句子」（可为空串，此时注入占位 assistant 消息）；
+        正常轮次为 None（不注入）。
         """
         ...
 
@@ -53,15 +59,15 @@ class SimpleOrchestrator:
         self._history = HistoryManager(max_tokens=max_history_tokens)
 
     async def stream_reply(
-        self, user_text: str, spoken_prefix: str = ""
+        self, user_text: str, spoken_prefix: str | None = None
     ) -> AsyncIterator[str]:
         """组装消息 → 流式生成 → 记录历史。
 
-        打断上下文重建：spoken_prefix 非空时先以 assistant 身份入历史
-        （被打断的半句不会出现——spoken 只含完整句），再接用户新话。
+        打断上下文重建：spoken_prefix 非 None（打断轮）时先以 assistant
+        身份入历史——已说 0 句则注入占位，保持 user→assistant 形态。
         """
-        if spoken_prefix:
-            self._history.add_assistant(spoken_prefix)
+        if spoken_prefix is not None:
+            self._history.add_assistant(spoken_prefix or _INTERRUPTED_PLACEHOLDER)
         messages: Sequence[ChatMessage] = self._builder.build(
             self._history.messages(), user_text
         )
@@ -97,21 +103,21 @@ class AgentScopeOrchestrator:
         self._agent = Agent(name="callbot", system_prompt=system_prompt, model=llm)
 
     async def stream_reply(
-        self, user_text: str, spoken_prefix: str = ""
+        self, user_text: str, spoken_prefix: str | None = None
     ) -> AsyncIterator[str]:
         """Agent 流式回复：取 TextBlockDeltaEvent 的 delta 文本。
 
-        打断上下文重建：spoken_prefix 非空时先 observe 一条 assistant
-        消息（已完整说出的句子），再以 user 消息触发回复。
+        打断上下文重建：spoken_prefix 非 None（打断轮）时先 observe 一条
+        assistant 消息（已完整说出的句子；空则占位），保持历史形态。
         """
         from agentscope.message import Msg, TextBlock
 
-        if spoken_prefix:
+        if spoken_prefix is not None:
             await self._agent.observe(
                 Msg(
                     name="assistant",
                     role="assistant",
-                    content=[TextBlock(text=spoken_prefix)],
+                    content=[TextBlock(text=spoken_prefix or _INTERRUPTED_PLACEHOLDER)],
                 ),
             )
         async for event in self._agent.reply_stream(

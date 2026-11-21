@@ -13,7 +13,7 @@ import base64
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,6 +42,7 @@ from callbot.providers.base import (
     create_tts,
     tts_config_from_settings,
 )
+from callbot.providers.config_store import apply_provider_overrides
 from callbot.providers.tts import StreamingTTS
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,17 @@ SignalMessage = dict[str, Any]
 # 进程级模型单例（GPU 常驻，多路会话共享）
 _SHARED_ASR: StreamingASR | None = None
 _SHARED_TTS: StreamingTTS | None = None
+
+
+def invalidate_shared_providers() -> None:
+    """失效模型单例（4.4 Web 面板保存配置后调用）。
+
+    旧实例引用计数归零后由 GC 释放（本地模型显存随之释放）；
+    下一路会话 get_shared_* 按新配置重建——热切换。
+    """
+    global _SHARED_ASR, _SHARED_TTS
+    _SHARED_ASR = None
+    _SHARED_TTS = None
 
 
 def get_shared_asr(settings: Settings) -> StreamingASR:
@@ -214,6 +226,7 @@ def _prepare_models(  # noqa: ANN001
     reply_active: callable,
     vad: SileroVAD,
     settings: Settings,
+    interrupt_cb: Callable[[], Awaitable[None]],
 ) -> asyncio.Task[None]:
     """异步准备模型：加载 ASR + VAD（线程内）并挂到会话引擎。
 
@@ -224,27 +237,46 @@ def _prepare_models(  # noqa: ANN001
         reply_active: 返回机器人是否正在回复（半双工门控）。
         vad: 本会话 VAD 实例（状态机在 handle_signaling 中消费）。
         settings: 全局配置（ASR 工厂 kind 分发）。
+        interrupt_cb: 打断触发（async）；回复期间转写出字即调用——ASR 驱动
+            打断比 VAD 起音（250ms 观察窗）更快。
     """
 
-    def send_transcript(result: ASRResult) -> None:
-        logger.info("转写: %s", result.text)
-
-        async def _send() -> None:
-            try:
-                await websocket.send_text(
-                    json.dumps(
-                        {"type": "transcript", "text": result.text, "is_final": result.is_final}
-                    )
-                )
-            except Exception:  # noqa: BLE001 - WS 已断开时静默
-                pass
-
-        asyncio.ensure_future(_send())
-        # 半双工：机器人回复期间的新转写不参与下一轮
-        if not reply_active():
-            utterance.append(result.text)
-
     async def run() -> None:
+        loop = asyncio.get_running_loop()  # 主事件循环（云端 ASR 回调线程用）
+        interrupt_fired = False  # 去重：每轮回复只打断一次
+        prev_reply_active = False
+
+        def send_transcript(result: ASRResult) -> None:
+            nonlocal interrupt_fired, prev_reply_active
+            logger.info("转写: %s", result.text)
+
+            async def _send() -> None:
+                try:
+                    await websocket.send_text(
+                        json.dumps(
+                            {"type": "transcript", "text": result.text, "is_final": result.is_final}
+                        )
+                    )
+                except Exception:  # noqa: BLE001 - WS 已断开时静默
+                    pass
+
+            # 云端 ASR 结果在后台线程到达：threadsafe 投递到主事件循环
+            asyncio.run_coroutine_threadsafe(_send(), loop)
+            active = reply_active()
+            if active and not prev_reply_active:
+                interrupt_fired = False  # 新一轮回复开始，重置打断去重
+            prev_reply_active = active
+            # ASR 驱动打断：机器人回复期间出字 = 用户抢话（比 VAD 起音快）
+            if active and result.text.strip() and not interrupt_fired:
+                interrupt_fired = True
+                logger.info("ASR 打断触发: %s", result.text)
+                asyncio.run_coroutine_threadsafe(interrupt_cb(), loop)
+            elif active and result.text.strip():
+                logger.info("打断被去重/未触发: text=%s fired=%s", result.text, interrupt_fired)
+            # 半双工：机器人回复期间的新转写不参与下一轮
+            if not active:
+                utterance.append(result.text)
+
         try:
             await websocket.send_text(
                 json.dumps({"type": "status", "detail": "ASR 模型加载中（首次约 10~20 秒）..."})
@@ -281,6 +313,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
         manager: 会话管理器。
     """
     settings = Settings()
+    apply_provider_overrides(settings)  # Web 面板覆盖层 > env > 默认
     session: Session | None = None
     vad = SileroVAD(
         model_path=settings.vad_model_path,
@@ -293,6 +326,17 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
     reply_in_progress = False
     reply_task: asyncio.Task[None] | None = None
     pending_spoken: list[str] = []  # 打断上下文：本轮已完整说出的句子
+    interrupted_this_turn = False  # 本轮回复是否被打断过（决定 spoken_prefix 注入）
+    audio_seq = 0  # 已发送音频帧序号（每帧递增）
+    confirmed_audio_seq = 0  # 前端已确认播放到的帧序号（playback_done 回传）
+
+    def playback_active() -> bool:
+        """前端是否仍在播报（已发送帧多于已确认帧）。
+
+        打断窗口 = 后端生成中 或 前端播报中——否则「AI 播报尾声」用户抢话
+        会被误判为正常轮次（后端已发完但前端还在播）。
+        """
+        return audio_seq > confirmed_audio_seq
     orch: Orchestrator | None = None
 
     async def send_json(payload: dict[str, Any]) -> None:
@@ -302,18 +346,22 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
             pass
 
     async def send_audio(frame: AudioFrame) -> None:
+        nonlocal audio_seq
+        audio_seq += 1
         await send_json(
             {
                 "type": "audio",
+                "seq": audio_seq,
                 "sample_rate": frame.sample_rate,
                 "data": base64.b64encode(frame.data).decode(),
             }
         )
 
-    async def run_reply(text: str, spoken_prefix: str = "") -> None:
+    async def run_reply(text: str, spoken_prefix: str | None = None) -> None:
         """回复管线：编排层 → joiner → 引擎 FIFO → 并发推送音频帧。
 
-        spoken_prefix：打断后的上下文重建素材（已完整说出的句子）。
+        spoken_prefix：打断上下文重建素材——打断轮为已说句子（可空串，
+        编排层注入占位）；正常轮为 None。
         打断时本 task 被 cancel → token 流 aclose → LLM 关流。
         """
         nonlocal reply_in_progress
@@ -369,15 +417,18 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
         cancel 回复 task（token 流 aclose → LLM 关流）→ 前端 stop_audio
         立即停播已调度的帧。started_at 为 VAD 起音判定的时刻（埋点计时）。
         """
-        nonlocal reply_in_progress, pending_spoken
+        nonlocal reply_in_progress, pending_spoken, interrupted_this_turn
         engine = session.engine
         if engine is None:
             return
+        logger.info("打断执行: 打断前状态=%s", session.engine.state)
         spoken = engine.interrupt()  # 清队列 + SPEAKING/THINKING → LISTENING
         pending_spoken.extend(spoken)
+        interrupted_this_turn = True  # 下一轮回复注入打断占位（保持历史形态）
         reply_in_progress = False
         if reply_task is not None:
-            reply_task.cancel()
+            reply_task.cancel()  # 先停音频帧流（drain 随队列清空退出）
+        await asyncio.sleep(0)  # 让 cancel 的 task 先退出，stop 消息少排队
         await send_json({"type": "stop_audio"})
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info(
@@ -398,27 +449,46 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                 event = vad.process_frame(frame)
                 if event is VADEvent.SPEECH_START:
                     flushed = False  # 新语音段到达，重置收尾门控
-                    if reply_in_progress:
+                    if reply_in_progress or playback_active():
                         asyncio.ensure_future(handle_interrupt(time.perf_counter()))
                 elif event is VADEvent.SPEECH_END:
                     engine = session.engine if session else None
                     if (
                         engine is not None
                         and not reply_in_progress
+                        and not playback_active()
                         and engine.state == EngineState.LISTENING
                         and not flushed
                         and utterance
                     ):
                         flushed = True
                         engine.flush_asr()
-                        text = "".join(utterance).strip()
-                        utterance.clear()
-                        if text:
-                            logger.info("完整转写: %s", text)
-                            await send_json({"type": "utterance", "text": text})
-                            prefix = "".join(pending_spoken)
-                            pending_spoken.clear()
-                            reply_task = asyncio.ensure_future(run_reply(text, prefix))
+
+                        async def finish_utterance() -> None:
+                            """收尾宽限：等云端 ASR 判停增量并入后再送回复。
+
+                            云端实时识别的尾字在判停（~800ms 静音）后才返回；
+                            宽限期内的增量继续 append 到 utterance，避免吞尾字。
+                            """
+                            nonlocal reply_task, interrupted_this_turn
+                            await asyncio.sleep(settings.utterance_settle_ms / 1000)
+                            text = "".join(utterance).strip()
+                            utterance.clear()
+                            if text:
+                                logger.info("完整转写: %s", text)
+                                await send_json({"type": "utterance", "text": text})
+                                if interrupted_this_turn:
+                                    # 打断轮：注入已说句子（可空，编排层补占位）
+                                    prefix: str | None = "".join(pending_spoken)
+                                else:
+                                    prefix = None
+                                pending_spoken.clear()
+                                interrupted_this_turn = False
+                                reply_task = asyncio.ensure_future(
+                                    run_reply(text, prefix)
+                                )
+
+                        asyncio.ensure_future(finish_utterance())
                 if session is not None and session.engine is not None:
                     session.engine.feed_audio(frame)
                 continue
@@ -441,7 +511,13 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                 session.engine = ConversationEngine()
                 session.engine.start()
                 _prepare_models(
-                    session, websocket, utterance, lambda: reply_in_progress, vad, settings
+                    session,
+                    websocket,
+                    utterance,
+                    lambda: reply_in_progress or playback_active(),
+                    vad,
+                    settings,
+                    lambda: handle_interrupt(time.perf_counter()),
                 )
                 await pc.setRemoteDescription(
                     RTCSessionDescription(sdp=msg["sdp"], type="offer")
@@ -458,6 +534,12 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                     cand = _parse_ice_candidate(candidate)
                     if cand is not None:
                         await session.peer.addIceCandidate(cand)
+            elif mtype == "playback_done":
+                # 前端确认播放到某帧：打断窗口据此收敛（后端发完 ≠ 前端播完）
+                seq = msg.get("seq", 0)
+                if isinstance(seq, int):
+                    confirmed_audio_seq = max(confirmed_audio_seq, seq)
+                    logger.debug("前端确认播放到帧 %d", confirmed_audio_seq)
     except WebSocketDisconnect:
         pass
     finally:
