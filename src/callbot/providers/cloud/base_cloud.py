@@ -27,8 +27,9 @@ logger = logging.getLogger(__name__)
 _CLOSE = object()
 # 接收轮询间隔（秒）：云端 ASR 帧间隔 600ms，轮询开销可忽略
 _RECV_POLL_S = 0.05
-# is_final 已发后等待服务端推完剩余结果的超时
-_DRAIN_TIMEOUT_S = 1.5
+# is_final 已发后等待服务端推完剩余结果的超时（官方建议收到
+# is_last_package 确认后再关连接；无该字段时靠超时兜底）
+_DRAIN_TIMEOUT_S = 3.0
 
 
 class CloudASRBase:
@@ -44,6 +45,10 @@ class CloudASRBase:
 
     reset() 清队列并投递哨兵关当前连接，下一轮 process_chunk 自动重建。
     """
+
+    # 长连接模式（火山大模型 ASR）：is_final 只触发判停静音、不发末包不关连接，
+    # 后续音频帧续传——避免「收尾后用户继续说话」的音频积压与新连接延迟
+    _keep_connection = False
 
     def __init__(self) -> None:
         self._callback: Callable[[ASRResult], None] | None = None
@@ -65,6 +70,10 @@ class CloudASRBase:
 
     def _end_frame(self) -> bytes | None:
         return None
+
+    def _pre_end_frames(self) -> list[bytes]:
+        """结束帧前补发的帧（默认空；云端 VAD 判停需要真实静音流）。"""
+        return []
 
     def _parse_message(self, raw: bytes | str) -> ASRResult | None:
         raise NotImplementedError
@@ -134,10 +143,16 @@ class CloudASRBase:
         ended = is_final
         end_sent_at: float | None = None
         if ended:
-            end = self._end_frame()
-            if end is not None:
-                send_raw(end)
-            end_sent_at = time.monotonic()
+            # 判停前补静音流（服务端 VAD 需足够静音释放尾字）
+            for extra in self._pre_end_frames():
+                send_raw(extra)
+            if self._keep_connection:
+                ended = False  # 长连接模式：不结束会话，后续音频续传
+            else:
+                end = self._end_frame()
+                if end is not None:
+                    send_raw(end)
+                end_sent_at = time.monotonic()
         while True:
             # 1) 收服务端消息（短超时轮询）
             try:
@@ -147,6 +162,12 @@ class CloudASRBase:
                     self._emit(result)
             except TimeoutError:
                 pass
+            except Exception as exc:  # noqa: BLE001 - 连接关闭视为会话正常结束
+                from websockets.exceptions import ConnectionClosed
+
+                if isinstance(exc, ConnectionClosed):
+                    return
+                raise
             # 2) 处理发送队列
             if not ended:
                 try:
@@ -159,6 +180,12 @@ class CloudASRBase:
                     chunk, final = item  # type: ignore[misc]
                     send_raw(self._encode_audio(chunk))
                     if final:
+                        # 判停前补静音流（服务端 VAD 需足够静音释放尾字）
+                        for extra in self._pre_end_frames():
+                            send_raw(extra)
+                        if self._keep_connection:
+                            # 长连接模式：不结束会话，后续音频续传
+                            continue
                         end = self._end_frame()
                         if end is not None:
                             send_raw(end)

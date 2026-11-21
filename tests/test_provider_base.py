@@ -157,6 +157,16 @@ def test_tts_config_aliyun_ak_sk() -> None:
     assert cfg.params["voice"] == "longxiaochun"
 
 
+def test_tts_config_volc_mapping() -> None:
+    """volc：api_key 复用 asr_api_key，speaker 从 tts_volc_speaker 取。"""
+    cfg = tts_config_from_settings(_settings(tts_kind="volc", asr_api_key="k"))
+    assert cfg.kind == "volc"
+    assert cfg.api_key == "k"
+    assert cfg.params["speaker"] == "zh_female_vv_uranus_bigtts"
+    with pytest.raises(ValueError, match="CALLBOT_ASR_API_KEY"):
+        tts_config_from_settings(_settings(tts_kind="volc"))
+
+
 def test_tts_config_unknown_kind() -> None:
     """未知 kind 报错。"""
     with pytest.raises(ValueError, match="未知 TTS provider"):

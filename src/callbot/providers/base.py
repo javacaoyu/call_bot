@@ -75,6 +75,14 @@ def tts_config_from_settings(settings: Any) -> ProviderConfig:
                 "voice": settings.tts_voice,
             },
         )
+    if settings.tts_kind == "volc":
+        if not settings.asr_api_key:
+            raise ValueError("volc TTS 缺少配置: CALLBOT_ASR_API_KEY（火山 Key 通用）")
+        return ProviderConfig(
+            kind="volc",
+            api_key=settings.asr_api_key,
+            params={"speaker": settings.tts_volc_speaker},
+        )
     raise ValueError(f"未知 TTS provider: {settings.tts_kind}")
 
 
@@ -143,6 +151,15 @@ def create_tts(cfg: ProviderConfig) -> StreamingTTS:
             access_key_id=cfg.params.get("access_key_id", ""),
             access_key_secret=cfg.params.get("access_key_secret", ""),
             voice=cfg.params.get("voice", "longxiaochun"),
+        )
+    if cfg.kind == "volc":
+        from callbot.providers.cloud.volc_tts import VolcStreamingTTS
+
+        return VolcStreamingTTS(
+            api_key=cfg.api_key,
+            speaker=cfg.params.get(
+                "speaker", "zh_female_vv_uranus_bigtts"
+            ),
         )
     raise ValueError(f"未知 TTS provider: {cfg.kind}")
 

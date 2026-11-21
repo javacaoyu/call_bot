@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     tts_access_key_id: str = ""
     tts_access_key_secret: str = ""
     tts_voice: str = "longxiaochun"
+    # 火山 TTS 音色（豆包语音合成 2.0 默认音色；api_key 复用 asr_api_key——
+    # 火山同一账号 X-Api-Key 跨服务通用）
+    tts_volc_speaker: str = "zh_female_vv_uranus_bigtts"
     # VAD（WBS 3.1/3.4）：Silero 模型路径与灵敏度参数（相对路径基于项目根）。
     # min_speech_ms 为起音观察窗 = 打断灵敏度核心旋钮（越小打断越快但越易误触发）；
     # min_silence_ms 为端点静音容忍。
@@ -50,3 +53,5 @@ class Settings(BaseSettings):
     vad_threshold: float = 0.5
     vad_min_speech_ms: int = 250
     vad_min_silence_ms: int = 400
+    # 收尾宽限：flush 后等待云端 ASR 判停增量并入完整转写的时长（ms）
+    utterance_settle_ms: int = 800
