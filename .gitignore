@@ -47,3 +47,8 @@ frontend/dist/
 .idea/
 .DS_Store
 Thumbs.db
+provider_config.json
+
+# 官方文档 PDF（参考用，不入库）
+docs/*.pdf
+*.Zone.Identifier

@@ -1,8 +1,72 @@
 body {
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui,
+    -apple-system, sans-serif;
   margin: 0;
   background: #f5f6f8;
   color: #1f2329;
+}
+
+/* 管理台外壳：深色顶栏 + 内容区（WBS 4.4） */
+.shell {
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 24px;
+  background: #161b22;
+  border-bottom: 1px solid #2a333d;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-lamp {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e8a33d;
+}
+
+.brand-name {
+  color: #e6ebf0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.brand-sub {
+  color: #8b98a5;
+  font-size: 12px;
+  margin-left: 2px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tabs button {
+  background: transparent;
+  color: #8b98a5;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  margin: 0;
+}
+
+.tabs button.active {
+  background: #2a333d;
+  color: #e6ebf0;
+}
+
+.tabs button:focus-visible {
+  outline: 2px solid #4d9de0;
 }
 
 .app {
