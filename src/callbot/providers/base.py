@@ -23,31 +23,18 @@ def asr_config_from_settings(settings: Any) -> ProviderConfig:
     """
     if settings.asr_kind == "funasr":
         return ProviderConfig(kind="funasr")
-    if settings.asr_kind == "xfyun":
-        missing = [
-            name
-            for name, value in (
-                ("CALLBOT_ASR_APP_ID", settings.asr_app_id),
-                ("CALLBOT_ASR_API_KEY", settings.asr_api_key),
-                ("CALLBOT_ASR_API_SECRET", settings.asr_api_secret),
-            )
-            if not value
-        ]
-        if missing:
-            raise ValueError(f"xfyun ASR 缺少配置: {', '.join(missing)}")
-        return ProviderConfig(
-            kind="xfyun",
-            api_key=settings.asr_api_key,
-            params={"app_id": settings.asr_app_id, "api_secret": settings.asr_api_secret},
-        )
-    if settings.asr_kind == "volc":
+    if settings.asr_kind in ("volc", "qwen"):
         if not settings.asr_api_key:
-            raise ValueError("volc ASR 缺少配置: CALLBOT_ASR_API_KEY")
-        return ProviderConfig(
-            kind="volc",
-            api_key=settings.asr_api_key,
-            params={"resource_id": settings.asr_resource_id},
-        )
+            raise ValueError(
+                f"{settings.asr_kind} ASR 缺少配置: CALLBOT_ASR_API_KEY"
+            )
+        if settings.asr_kind == "volc":
+            return ProviderConfig(
+                kind="volc",
+                api_key=settings.asr_api_key,
+                params={"resource_id": settings.asr_resource_id},
+            )
+        return ProviderConfig(kind="qwen", api_key=settings.asr_api_key)
     raise ValueError(f"未知 ASR provider: {settings.asr_kind}")
 
 
@@ -83,6 +70,14 @@ def tts_config_from_settings(settings: Any) -> ProviderConfig:
             api_key=settings.asr_api_key,
             params={"speaker": settings.tts_volc_speaker},
         )
+    if settings.tts_kind == "qwen":
+        if not settings.asr_api_key:
+            raise ValueError("qwen TTS 缺少配置: CALLBOT_ASR_API_KEY（千问 Key 通用）")
+        return ProviderConfig(
+            kind="qwen",
+            api_key=settings.asr_api_key,
+            params={"voice": settings.tts_qwen_voice},
+        )
     raise ValueError(f"未知 TTS provider: {settings.tts_kind}")
 
 
@@ -111,20 +106,12 @@ class ModelProvider(Protocol):
 
 
 def create_asr(cfg: ProviderConfig) -> StreamingASR:
-    """ASR 工厂：按 kind 分发（funasr 本地；xfyun/volc 云端 4.2 接入）。"""
+    """ASR 工厂：按 kind 分发（funasr 本地；volc/qwen 云端）。"""
     if cfg.kind == "funasr":
         from callbot.providers.asr import FunASRStreamingASR
 
         return FunASRStreamingASR(
             model_dir=cfg.params.get("model_dir", "models/paraformer-zh-streaming")
-        )
-    if cfg.kind == "xfyun":
-        from callbot.providers.cloud.xfyun_asr import XfyunStreamingASR
-
-        return XfyunStreamingASR(
-            app_id=cfg.params.get("app_id", ""),
-            api_key=cfg.api_key,
-            api_secret=cfg.params.get("api_secret", ""),
         )
     if cfg.kind == "volc":
         from callbot.providers.cloud.volc_asr import VolcStreamingASR
@@ -133,6 +120,10 @@ def create_asr(cfg: ProviderConfig) -> StreamingASR:
             api_key=cfg.api_key,
             resource_id=cfg.params.get("resource_id", "volc.seedasr.sauc.duration"),
         )
+    if cfg.kind == "qwen":
+        from callbot.providers.cloud.qwen_asr import QwenStreamingASR
+
+        return QwenStreamingASR(api_key=cfg.api_key)
     raise ValueError(f"未知 ASR provider: {cfg.kind}")
 
 
@@ -160,6 +151,13 @@ def create_tts(cfg: ProviderConfig) -> StreamingTTS:
             speaker=cfg.params.get(
                 "speaker", "zh_female_vv_uranus_bigtts"
             ),
+        )
+    if cfg.kind == "qwen":
+        from callbot.providers.cloud.qwen_tts import QwenStreamingTTS
+
+        return QwenStreamingTTS(
+            api_key=cfg.api_key,
+            voice=cfg.params.get("voice", "longanhuan_v3.1"),
         )
     raise ValueError(f"未知 TTS provider: {cfg.kind}")
 

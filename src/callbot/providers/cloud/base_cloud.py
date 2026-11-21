@@ -62,7 +62,7 @@ class CloudASRBase:
     def _handshake_headers(self) -> dict[str, str]:
         return {}
 
-    def _start_frame(self) -> bytes | None:
+    def _start_frame(self) -> str | bytes | None:
         return None
 
     def _encode_audio(self, data: bytes) -> bytes:
@@ -71,8 +71,18 @@ class CloudASRBase:
     def _end_frame(self) -> bytes | None:
         return None
 
-    def _pre_end_frames(self) -> list[bytes]:
-        """结束帧前补发的帧（默认空；云端 VAD 判停需要真实静音流）。"""
+    def _final_frames(self) -> list[str | bytes]:
+        """is_final 时额外发送的帧（默认空）。
+
+        火山：判停静音流（bytes）；千问：finish-task 指令（str，文本帧）。
+        """
+        return []
+
+    def _resume_frames(self) -> list[str | bytes]:
+        """final 后恢复发送音频前额外发送的帧（默认空）。
+
+        千问：新任务 run-task（str，文本帧）。
+        """
         return []
 
     def _parse_message(self, raw: bytes | str) -> ASRResult | None:
@@ -139,15 +149,18 @@ class CloudASRBase:
         start = self._start_frame()
         if start is not None:
             send_raw(start)
-        send_raw(self._encode_audio(data))
+        first_encoded = self._encode_audio(data)
+        if first_encoded is not None:
+            send_raw(first_encoded)
         ended = is_final
         end_sent_at: float | None = None
+        need_resume = False
         if ended:
-            # 判停前补静音流（服务端 VAD 需足够静音释放尾字）
-            for extra in self._pre_end_frames():
+            for extra in self._final_frames():
                 send_raw(extra)
             if self._keep_connection:
                 ended = False  # 长连接模式：不结束会话，后续音频续传
+                need_resume = True
             else:
                 end = self._end_frame()
                 if end is not None:
@@ -178,13 +191,19 @@ class CloudASRBase:
                     return  # 会话关闭：直接断连
                 if item is not None:
                     chunk, final = item  # type: ignore[misc]
-                    send_raw(self._encode_audio(chunk))
+                    encoded = self._encode_audio(chunk)
+                    if encoded is not None:
+                        if need_resume:
+                            for extra in self._resume_frames():
+                                send_raw(extra)
+                            need_resume = False
+                        send_raw(encoded)
                     if final:
-                        # 判停前补静音流（服务端 VAD 需足够静音释放尾字）
-                        for extra in self._pre_end_frames():
+                        for extra in self._final_frames():
                             send_raw(extra)
                         if self._keep_connection:
                             # 长连接模式：不结束会话，后续音频续传
+                            need_resume = True
                             continue
                         end = self._end_frame()
                         if end is not None:

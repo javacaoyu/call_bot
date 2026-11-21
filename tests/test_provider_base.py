@@ -76,31 +76,17 @@ def test_asr_config_funasr_default() -> None:
     assert cfg == ProviderConfig(kind="funasr")
 
 
-def test_asr_config_xfyun_mapping() -> None:
-    """xfyun：三件套映射到 ProviderConfig。"""
-    cfg = asr_config_from_settings(
-        _settings(
-            asr_kind="xfyun",
-            asr_app_id="app",
-            asr_api_key="key",
-            asr_api_secret="secret",
-        )
-    )
-    assert cfg.kind == "xfyun"
-    assert cfg.api_key == "key"
-    assert cfg.params == {"app_id": "app", "api_secret": "secret"}
+def test_asr_config_qwen_mapping() -> None:
+    """qwen：api_key 直接映射（无额外参数）。"""
+    cfg = asr_config_from_settings(_settings(asr_kind="qwen", asr_api_key="k"))
+    assert cfg.kind == "qwen"
+    assert cfg.api_key == "k"
 
 
-def test_asr_config_xfyun_missing_key() -> None:
-    """xfyun 缺密钥报错并提示 env 名。"""
-    with pytest.raises(ValueError, match="CALLBOT_ASR_APP_ID"):
-        asr_config_from_settings(
-            _settings(asr_kind="xfyun", asr_api_key="k", asr_api_secret="s")
-        )
+def test_asr_config_qwen_missing_key() -> None:
+    """qwen 缺密钥报错并提示 env 名。"""
     with pytest.raises(ValueError, match="CALLBOT_ASR_API_KEY"):
-        asr_config_from_settings(
-            _settings(asr_kind="xfyun", asr_app_id="a", asr_api_secret="s")
-        )
+        asr_config_from_settings(_settings(asr_kind="qwen"))
 
 
 def test_asr_config_volc_mapping() -> None:
@@ -165,6 +151,16 @@ def test_tts_config_volc_mapping() -> None:
     assert cfg.params["speaker"] == "zh_female_vv_uranus_bigtts"
     with pytest.raises(ValueError, match="CALLBOT_ASR_API_KEY"):
         tts_config_from_settings(_settings(tts_kind="volc"))
+
+
+def test_tts_config_qwen_mapping() -> None:
+    """qwen：api_key 复用 asr_api_key，voice 从 tts_qwen_voice 取（同 Key 模式）。"""
+    cfg = tts_config_from_settings(_settings(tts_kind="qwen", asr_api_key="k"))
+    assert cfg.kind == "qwen"
+    assert cfg.api_key == "k"
+    assert cfg.params["voice"] == "longanhuan_v3.1"
+    with pytest.raises(ValueError, match="CALLBOT_ASR_API_KEY"):
+        tts_config_from_settings(_settings(tts_kind="qwen"))
 
 
 def test_tts_config_unknown_kind() -> None:

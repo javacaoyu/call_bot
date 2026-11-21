@@ -47,12 +47,12 @@ def test_save_roundtrip_and_filter(tmp_path) -> None:
 def test_apply_overrides_to_settings(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """覆盖层应用到 Settings 实例（json > env > 默认）。"""
     path = tmp_path / "pc.json"
-    config_store.save_provider_overrides({"asr_kind": "xfyun"}, path)
+    config_store.save_provider_overrides({"asr_kind": "qwen"}, path)
     monkeypatch.setattr(config_store, "_CONFIG_PATH", path)
     settings = Settings(_env_file=None)
     assert settings.asr_kind == "funasr"  # 默认
     config_store.apply_provider_overrides(settings)
-    assert settings.asr_kind == "xfyun"  # json 覆盖
+    assert settings.asr_kind == "qwen"  # json 覆盖
 
 
 def test_invalidate_shared_providers() -> None:

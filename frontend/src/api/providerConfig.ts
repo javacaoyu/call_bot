@@ -2,9 +2,7 @@
 
 export interface ProviderConfig {
   asr_kind: string;
-  asr_app_id: string;
   asr_api_key: string;
-  asr_api_secret: string;
   asr_resource_id: string;
   tts_kind: string;
   tts_appkey: string;
@@ -13,6 +11,7 @@ export interface ProviderConfig {
   tts_access_key_secret: string;
   tts_voice: string;
   tts_volc_speaker: string;
+  tts_qwen_voice: string;
   llm_base_url: string;
   llm_api_key: string;
   llm_model: string;

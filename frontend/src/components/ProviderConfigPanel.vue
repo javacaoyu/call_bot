@@ -9,21 +9,20 @@ import {
 /** 线路 kind 选项：side 决定状态灯色（local=琥珀 / cloud=蓝）。 */
 const ASR_KINDS = [
   { value: "funasr", label: "本地 FunASR", side: "local" },
-  { value: "xfyun", label: "讯飞", side: "cloud" },
   { value: "volc", label: "火山", side: "cloud" },
+  { value: "qwen", label: "千问", side: "cloud" },
 ] as const;
 
 const TTS_KINDS = [
   { value: "cosyvoice", label: "本地 CosyVoice2", side: "local" },
   { value: "volc", label: "火山", side: "cloud" },
+  { value: "qwen", label: "千问", side: "cloud" },
   { value: "aliyun", label: "阿里", side: "cloud" },
 ] as const;
 
 const cfg = reactive<ProviderConfig>({
   asr_kind: "funasr",
-  asr_app_id: "",
   asr_api_key: "",
-  asr_api_secret: "",
   asr_resource_id: "volc.seedasr.sauc.duration",
   tts_kind: "cosyvoice",
   tts_appkey: "",
@@ -32,6 +31,7 @@ const cfg = reactive<ProviderConfig>({
   tts_access_key_secret: "",
   tts_voice: "longxiaochun",
   tts_volc_speaker: "zh_female_vv_uranus_bigtts",
+  tts_qwen_voice: "longanhuan_v3.1",
   llm_base_url: "",
   llm_api_key: "",
   llm_model: "",
@@ -126,14 +126,12 @@ onMounted(load);
               {{ k.label }}
             </button>
           </div>
-          <div v-if="cfg.asr_kind === 'xfyun'" class="fields">
-            <label>app_id<input v-model="cfg.asr_app_id" placeholder="讯飞控制台应用 ID" /></label>
-            <label>api_key<input v-model="cfg.asr_api_key" type="password" placeholder="APIKey" /></label>
-            <label>api_secret<input v-model="cfg.asr_api_secret" type="password" placeholder="APISecret" /></label>
-          </div>
-          <div v-else-if="cfg.asr_kind === 'volc'" class="fields">
+          <div v-if="cfg.asr_kind === 'volc'" class="fields">
             <label>api_key<input v-model="cfg.asr_api_key" type="password" placeholder="X-Api-Key" /></label>
             <label>资源 ID<input v-model="cfg.asr_resource_id" placeholder="volc.seedasr.sauc.duration" /></label>
+          </div>
+          <div v-else-if="cfg.asr_kind === 'qwen'" class="fields">
+            <label>api_key<input v-model="cfg.asr_api_key" type="password" placeholder="sk-...（DashScope API Key）" /></label>
           </div>
           <p v-else class="line-note">本地模型，无需密钥。</p>
         </div>
@@ -187,6 +185,12 @@ onMounted(load);
             <label>音色<input v-model="cfg.tts_volc_speaker" placeholder="zh_female_vv_uranus_bigtts" /></label>
             <p class="line-note" style="grid-column: 1 / -1">
               api_key 复用语音识别线路的密钥（火山同一账号 Key 通用）。
+            </p>
+          </div>
+          <div v-else-if="cfg.tts_kind === 'qwen'" class="fields">
+            <label>音色<input v-model="cfg.tts_qwen_voice" placeholder="longanhuan_v3.1" /></label>
+            <p class="line-note" style="grid-column: 1 / -1">
+              api_key 复用语音识别线路的密钥（千问同一账号 Key 通用）。
             </p>
           </div>
           <div v-else-if="cfg.tts_kind === 'aliyun'" class="fields">

@@ -191,7 +191,10 @@ async function connect(): Promise<void> {
         error.value = msg.detail ?? "信令错误";
         state.value = "error";
       } else if (msg.type === "transcript") {
-        transcript.value += msg.text ?? "";
+        // snapshot 语义（句级修订式 ASR）：整段替换；增量式：追加
+        transcript.value = msg.snapshot
+          ? (msg.text ?? "")
+          : transcript.value + (msg.text ?? "");
       } else if (msg.type === "status") {
         statusDetail.value = msg.detail ?? "";
       } else if (msg.type === "utterance") {

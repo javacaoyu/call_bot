@@ -19,9 +19,7 @@ _CONFIG_PATH = _PROJECT_ROOT / "provider_config.json"
 # Web 可配置的 provider 相关字段（与 Settings 字段名一一对应）
 _PROVIDER_FIELDS = (
     "asr_kind",
-    "asr_app_id",
     "asr_api_key",
-    "asr_api_secret",
     "asr_resource_id",
     "tts_kind",
     "tts_appkey",
@@ -30,6 +28,7 @@ _PROVIDER_FIELDS = (
     "tts_access_key_secret",
     "tts_voice",
     "tts_volc_speaker",
+    "tts_qwen_voice",
     "llm_base_url",
     "llm_api_key",
     "llm_model",

@@ -17,10 +17,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ASRResult:
-    """一次流式转写结果。"""
+    """一次流式转写结果。
+
+    text: 增量文本（进 utterance 累积）；is_final: 是否最终结果。
+    snapshot: 页面完整快照（句级修订式 ASR 如千问使用，前端替换显示；
+    增量式实现为 None，前端按增量追加）。
+    """
 
     text: str
     is_final: bool
+    snapshot: str | None = None
 
 
 class StreamingASR(Protocol):

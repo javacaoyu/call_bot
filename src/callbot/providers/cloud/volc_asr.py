@@ -170,7 +170,7 @@ class VolcStreamingASR(CloudASRBase):
     def _end_frame(self) -> bytes:
         return encode_audio_packet(b"", last=True)
 
-    def _pre_end_frames(self) -> list[bytes]:
+    def _final_frames(self) -> list[bytes]:
         """判停前补 1.2s 静音流（服务端 end_window_size=800ms 判停释放尾字）。"""
         silence = b"\x00" * (16000 * 2 * 600 // 1000)  # 600ms @16k PCM16
         return [encode_audio_packet(silence), encode_audio_packet(silence)]

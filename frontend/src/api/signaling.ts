@@ -21,6 +21,7 @@ export interface SignalMessage {
   sample_rate?: number;
   data?: string;
   seq?: number;
+  snapshot?: boolean;
 }
 
 export class SignalingClient {

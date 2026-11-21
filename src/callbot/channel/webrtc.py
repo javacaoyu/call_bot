@@ -252,9 +252,15 @@ def _prepare_models(  # noqa: ANN001
 
             async def _send() -> None:
                 try:
+                    page_text = result.snapshot if result.snapshot is not None else result.text
                     await websocket.send_text(
                         json.dumps(
-                            {"type": "transcript", "text": result.text, "is_final": result.is_final}
+                            {
+                                "type": "transcript",
+                                "text": page_text,
+                                "is_final": result.is_final,
+                                "snapshot": result.snapshot is not None,
+                            }
                         )
                     )
                 except Exception:  # noqa: BLE001 - WS 已断开时静默
