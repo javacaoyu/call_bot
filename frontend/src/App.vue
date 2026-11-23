@@ -6,6 +6,7 @@ import FlowEditorPage from "./components/FlowEditorPage.vue";
 import PersonasPage from "./components/PersonasPage.vue";
 import ProviderConfigPanel from "./components/ProviderConfigPanel.vue";
 import ScenesPage from "./components/ScenesPage.vue";
+import TemplatesPage from "./components/TemplatesPage.vue";
 import ToolsPage from "./components/ToolsPage.vue";
 import WebRtcSession from "./components/WebRtcSession.vue";
 
@@ -17,7 +18,8 @@ type View =
   | "customers"
   | "scenes"
   | "tools"
-  | "flow";
+  | "flow"
+  | "templates";
 
 interface NavItem {
   id: View | string;
@@ -44,7 +46,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { id: "personas", label: "人设管理", icon: "tpl" },
       { id: "flow", label: "话术编排", icon: "flow" },
       { id: "tools", label: "工具库", icon: "flow" },
-      { id: "templates", label: "模板库", soon: true, icon: "tpl" },
+      { id: "templates", label: "模板库", icon: "tpl" },
       { id: "kb", label: "知识库", soon: true, icon: "kb" },
     ],
   },
@@ -192,6 +194,7 @@ applyTheme(theme.value);
       <ScenesPage v-else-if="view === 'scenes'" @navigate="(v, s) => navigate(v, s)" />
       <ToolsPage v-else-if="view === 'tools'" :scene-id="pageScene" />
       <FlowEditorPage v-else-if="view === 'flow'" :scene-id="pageScene" />
+      <TemplatesPage v-else-if="view === 'templates'" @navigate="(v, s) => navigate(v, s)" />
     </main>
   </div>
 </template>

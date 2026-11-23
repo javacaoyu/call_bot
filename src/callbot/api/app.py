@@ -8,6 +8,7 @@ from callbot.api.flows import router as flows_router
 from callbot.api.personas import router as personas_router
 from callbot.api.provider_config import router as provider_config_router
 from callbot.api.scenes import router as scenes_router
+from callbot.api.templates import router as templates_router
 from callbot.api.tools import router as tools_router
 from callbot.channel.webrtc import SessionManager, handle_signaling
 from callbot.config import Settings
@@ -30,6 +31,7 @@ def create_app() -> FastAPI:
     app.include_router(scenes_router)
     app.include_router(tools_router)
     app.include_router(flows_router)
+    app.include_router(templates_router)
     manager = SessionManager()
 
     @app.websocket("/ws/signal")
