@@ -332,6 +332,12 @@ function parseLines(detail: string): void {
 }
 
 function disconnect(): void {
+  // 主动断开标记：后端据此立即落库（HMR/意外断开不落库，防噪音记录）
+  try {
+    signaling.send({ type: "bye" });
+  } catch {
+    // 连接已断则忽略
+  }
   stopPcmStream();
   stopPlayback(false); // 静默停止：不插打断标记不计数
   stopCallTimer();

@@ -30,6 +30,7 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from callbot.config import Settings
+from callbot.data.personas import get_active_persona_prompt
 from callbot.engine.engine import ConversationEngine
 from callbot.engine.frames import AudioFrame
 from callbot.engine.joiner import SpeechJoiner
@@ -462,6 +463,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                     base_url=settings.llm_base_url,
                     api_key=settings.llm_api_key,
                     model=settings.llm_model,
+                    system_prompt=get_active_persona_prompt(settings),  # 6.1 人设
                 )
             tts = await asyncio.to_thread(get_shared_tts, settings)
             joiner = SpeechJoiner(tts)
@@ -669,6 +671,9 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                     cand = _parse_ice_candidate(candidate)
                     if cand is not None:
                         await session.peer.addIceCandidate(cand)
+            elif mtype == "bye":
+                # 前端主动断开：立即落库（5.3）
+                await flush_record()
             elif mtype == "playback_done":
                 # 前端确认播放到某帧：打断窗口据此收敛（后端发完 ≠ 前端播完）
                 seq = msg.get("seq", 0)
@@ -683,5 +688,6 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                 session.engine.stop()  # flush ASR 并进入 CLOSED
             await session.peer.close()
             manager.remove(session.id)
-            # 通话记录（5.3）：会话结束落库（空闲收尾已记录则跳过）
-            await flush_record()
+            # 通话记录（5.3）：主动断开（bye）时已落库；意外断开
+            # （HMR 组件重挂载/服务重启）不落库，由 60s 空闲兜底——
+            # 否则开发期每次热更新都会冒出「42s 您好你好」噪音记录

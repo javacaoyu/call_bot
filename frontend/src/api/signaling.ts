@@ -12,7 +12,8 @@ export interface SignalMessage {
     | "reply"
     | "audio"
     | "stop_audio"
-    | "playback_done";
+    | "playback_done"
+    | "bye";
   sdp?: string;
   candidate?: RTCIceCandidateInit | null;
   detail?: string;
