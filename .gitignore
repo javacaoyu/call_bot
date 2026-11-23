@@ -29,9 +29,9 @@ third_party/
 *.pt
 *.pth
 
-# 运行时数据 / 录音
+# 运行时数据 / 录音（注意：src/callbot/data/ 是代码包，勿忽略）
 recordings/
-data/
+/data/
 *.wav
 
 # 日志
