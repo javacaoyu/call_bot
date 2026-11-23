@@ -3,6 +3,7 @@
 from fastapi import FastAPI, WebSocket
 
 from callbot.api.calls import router as calls_router
+from callbot.api.customers import router as customers_router
 from callbot.api.personas import router as personas_router
 from callbot.api.provider_config import router as provider_config_router
 from callbot.channel.webrtc import SessionManager, handle_signaling
@@ -20,6 +21,7 @@ def create_app() -> FastAPI:
     app.include_router(provider_config_router)
     app.include_router(calls_router)
     app.include_router(personas_router)
+    app.include_router(customers_router)
     manager = SessionManager()
 
     @app.websocket("/ws/signal")

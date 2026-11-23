@@ -30,7 +30,13 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from callbot.config import Settings
-from callbot.data.personas import get_active_persona_prompt
+from callbot.data.personas import (
+    get_active_persona_prompt,
+    get_active_persona_template,
+    get_persona_prompt,
+    render_with_context,
+    resolve_opening,
+)
 from callbot.engine.engine import ConversationEngine
 from callbot.engine.frames import AudioFrame
 from callbot.engine.joiner import SpeechJoiner
@@ -83,6 +89,21 @@ def get_shared_tts(settings: Settings) -> StreamingTTS:
         _SHARED_TTS = create_tts(tts_config_from_settings(settings))
         _SHARED_TTS.load()
     return _SHARED_TTS
+
+
+def classify_call_status(transcript: list[dict]) -> str | None:
+    """根据转写气泡流判定通话记录状态（5.3）。
+
+    Returns:
+        - None：无任何气泡（模型未就绪即断开等无效会话）——不记录
+        - "no_answer"：有气泡但无 user 气泡（AI 开过场/播报过，客户未说话）
+        - "connected"：含 user 气泡（客户说过话）
+    """
+    if not transcript:
+        return None
+    if any(b["role"] == "user" for b in transcript):
+        return "connected"
+    return "no_answer"
 
 
 def validate_message(raw: str) -> SignalMessage | None:
@@ -230,6 +251,7 @@ def _prepare_models(  # noqa: ANN001
     settings: Settings,
     interrupt_cb: Callable[[], Awaitable[None]],
     transcript_log: list[dict],
+    on_ready: Callable[[], Awaitable[None]] | None = None,
 ) -> asyncio.Task[None]:
     """异步准备模型：加载 ASR + VAD（线程内）并挂到会话引擎。
 
@@ -243,6 +265,8 @@ def _prepare_models(  # noqa: ANN001
         interrupt_cb: 打断触发（async）；回复期间转写出字即调用——ASR 驱动
             打断比 VAD 起音（250ms 观察窗）更快。
         transcript_log: 会话转写记录缓冲（5.3 通话记录落库）。
+        on_ready: 模型就绪回调（6.2 外呼开场触发点；6.3 流程编排起始节点
+            接入处）。ASR 挂载后调用——开场期间客户抢话可被打断。
     """
 
     async def run() -> None:
@@ -320,7 +344,7 @@ def _prepare_models(  # noqa: ANN001
                     {
                         "type": "status",
                         "detail": (
-                            "模型就绪，请开始说话"
+                            "模型就绪，AI 即将开场"
                             f"（ASR={settings.asr_kind} / TTS={settings.tts_kind}）"
                         ),
                     }
@@ -330,6 +354,8 @@ def _prepare_models(  # noqa: ANN001
             pass
         assert session.engine is not None
         session.engine.attach_asr(asr, send_transcript)
+        if on_ready is not None:
+            asyncio.ensure_future(on_ready())
 
     return asyncio.ensure_future(run())
 
@@ -361,6 +387,8 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
     confirmed_audio_seq = 0  # 前端已确认播放到的帧序号（playback_done 回传）
     # 通话记录（5.3）：会话转写气泡流 + 起始时刻 + 打断计数
     transcript_log: list[dict] = []
+    customer_info: dict[str, str] | None = None  # 外呼客户（变量插槽数据源）
+    selected_persona_id: str | None = None  # 外呼前选择的场景人设
     call_started_at = time.monotonic()
     from datetime import datetime
 
@@ -396,13 +424,14 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
         )
 
     async def flush_record() -> None:
-        """落库（幂等）：有 user 气泡才记录；空闲收尾与断开共用。"""
+        """落库（幂等）：断开与空闲收尾共用；状态由气泡流判定（5.3）。"""
         nonlocal recorded
         if recorded:
             return
         recorded = True
-        if not transcript_log or not any(b["role"] == "user" for b in transcript_log):
-            return  # 过滤无效会话（客户未说过话）
+        status = classify_call_status(transcript_log)
+        if status is None:
+            return  # 过滤无效会话（无任何气泡：模型未就绪即断开）
         from datetime import datetime
 
         from callbot.data.models import CallRecord, save_call_record
@@ -415,14 +444,15 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                     started_at=call_started_wall,
                     ended_at=now,
                     duration_s=duration,
-                    status="connected",
+                    status=status,
                     interrupt_count=interrupt_count,
                     transcript=transcript_log,
                 ),
                 settings,
             )
             logger.info(
-                "通话记录已保存: %d 条气泡, %d 次打断",
+                "通话记录已保存: %s, %d 条气泡, %d 次打断",
+                status,
                 len(transcript_log),
                 interrupt_count,
             )
@@ -443,11 +473,18 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
             idle_record_task.cancel()
         idle_record_task = asyncio.ensure_future(schedule_idle_record())
 
-    async def run_reply(text: str, spoken_prefix: str | None = None) -> None:
+    async def run_reply(
+        text: str,
+        spoken_prefix: str | None = None,
+        *,
+        direct: bool = False,
+    ) -> None:
         """回复管线：编排层 → joiner → 引擎 FIFO → 并发推送音频帧。
 
         spoken_prefix：打断上下文重建素材——打断轮为已说句子（可空串，
         编排层注入占位）；正常轮为 None。
+        direct：text 为定稿口播文本（6.2 开场白直读）——直接合成，
+        不走 LLM、不建编排器。
         打断时本 task 被 cancel → token 流 aclose → LLM 关流。
         """
         nonlocal reply_in_progress
@@ -456,20 +493,43 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
         engine = session.engine
         assert engine is not None
         try:
-            # 编排器每会话只建一次：多轮对话历史跨轮保留
-            if orch is None:
+            # 编排器每会话只建一次：多轮对话历史跨轮保留；
+            # direct（开场白直读）不建——开场不消耗 LLM
+            if orch is None and not direct:
+                # 6.1/6.2 人设 + 变量：外呼前选择的场景人设优先；
+                # 渲染客户变量（{客户姓名}/{电话号码}）+ 时间行
+                template = get_persona_prompt(selected_persona_id, settings)
+                if template is None:
+                    template = get_active_persona_template(settings)
+                system_prompt = (
+                    render_with_context(template, customer_info)
+                    if template is not None
+                    else get_active_persona_prompt(settings)
+                )
                 orch = create_orchestrator(
                     kind=settings.orchestration_backend,
                     base_url=settings.llm_base_url,
                     api_key=settings.llm_api_key,
                     model=settings.llm_model,
-                    system_prompt=get_active_persona_prompt(settings),  # 6.1 人设
+                    system_prompt=system_prompt,
                 )
             tts = await asyncio.to_thread(get_shared_tts, settings)
             joiner = SpeechJoiner(tts)
             engine.mark_thinking()
 
             async def tokens() -> AsyncIterator[str]:  # noqa: ANN202
+                if direct:
+                    # 开场白直读：一次推全量文本（气泡 + 落库），joiner 按标点分段合成
+                    await send_json({"type": "reply", "text": text})
+                    ts = round(time.monotonic(), 2)
+                    if transcript_log and transcript_log[-1]["role"] == "bot":
+                        transcript_log[-1]["text"] += text
+                        transcript_log[-1]["ts"] = ts
+                    else:
+                        transcript_log.append({"role": "bot", "text": text, "ts": ts})
+                    yield text
+                    return
+                assert orch is not None
                 async for token in orch.stream_reply(text, spoken_prefix):
                     await send_json({"type": "reply", "text": token})
                     # 通话记录（5.3）：bot 气泡合并
@@ -504,6 +564,25 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
             await send_json({"type": "status", "detail": "回复失败，请重试"})
             reply_in_progress = False
         arm_idle_record()  # 一轮回复结束：重新计时空闲落库（5.3）
+
+    async def start_opening() -> None:
+        """外呼开场（6.2）：模型就绪后 AI 首先说话，客户必已知。
+
+        配置了开场白模板 → 渲染后直读合成（确定性、快、运营可控）；
+        未配置 → LLM 按人设兜底生成（触发文本注入客户姓名）。
+        **6.3 流程编排接入点**：流程图起始节点将替换本函数。
+        """
+        nonlocal reply_task
+        opening = resolve_opening(selected_persona_id, settings, customer_info)
+        await send_json({"type": "status", "detail": "AI 开场中…"})
+        if opening:
+            logger.info("开场白直读: %s", opening)
+            reply_task = asyncio.ensure_future(run_reply(opening, direct=True))
+            return
+        name = customer_info["name"] if customer_info else "客户"
+        trigger = f"（通话开始，请主动开口：向{name}打招呼、报出身份并说明来意）"
+        logger.info("开场白 LLM 兜底生成: 客户=%s", name)
+        reply_task = asyncio.ensure_future(run_reply(trigger))
 
     async def handle_interrupt(started_at: float) -> None:
         """打断动作链（3.3）：停音频 + 关 LLM 流 + 暂存已说句子。
@@ -641,6 +720,37 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
 
             mtype = msg["type"]
             if mtype == "offer":
+                # 6.2 外呼必须选客户：客户变量（姓名/电话/备注）在
+                # 外呼那一刻动态注入人设模板
+                from callbot.data.models import Customer
+
+                customer_id = msg.get("customer_id")
+                _c: Customer | None = None
+                if isinstance(customer_id, str) and customer_id:
+                    try:
+                        import uuid as _uuid
+
+                        from sqlalchemy.orm import Session as _Session
+
+                        from callbot.data.models import get_engine
+
+                        with _Session(get_engine(settings)) as _s:
+                            _c = _s.get(Customer, _uuid.UUID(customer_id))
+                    except Exception:  # noqa: BLE001 - 查询失败按「未选客户」处理
+                        logger.exception("客户查询失败")
+                if _c is None:
+                    await websocket.send_text(
+                        json.dumps({"type": "error", "detail": "请先选择外呼客户再连接"})
+                    )
+                    continue
+                customer_info = {"name": _c.name, "phone": _c.phone, "notes": _c.notes}
+                logger.info(
+                    "外呼客户: %s %s 备注=%s", _c.name, _c.phone, _c.notes or "无"
+                )
+                persona_id = msg.get("persona_id")
+                if isinstance(persona_id, str) and persona_id:
+                    selected_persona_id = persona_id
+                    logger.info("场景人设: %s", persona_id)
                 pc = RTCPeerConnection()
                 session = Session(peer=pc, id=str(id(pc)))
                 manager.add(session)
@@ -655,6 +765,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                     settings,
                     lambda: handle_interrupt(time.perf_counter()),
                     transcript_log,
+                    on_ready=start_opening,
                 )
                 await pc.setRemoteDescription(
                     RTCSessionDescription(sdp=msg["sdp"], type="offer")

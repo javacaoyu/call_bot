@@ -17,13 +17,14 @@ const saved = ref("");
 /** 编辑表单（showEditor 控制显隐；editing=null 表示新建）。 */
 const showEditor = ref(false);
 const editing = ref<Persona | null>(null);
-const form = reactive({ name: "", description: "", system_prompt: "" });
+const form = reactive({ name: "", description: "", system_prompt: "", opening: "" });
 
 function openEditor(p: Persona | null): void {
   editing.value = p;
   form.name = p?.name ?? "";
   form.description = p?.description ?? "";
   form.system_prompt = p?.system_prompt ?? "";
+  form.opening = p?.opening ?? "";
   showEditor.value = true;
 }
 
@@ -140,6 +141,19 @@ onMounted(load);
             class="rounded-md border border-line bg-bg px-2.5 py-2 font-mono text-[13px] leading-relaxed text-text outline-none focus:border-blue"
           ></textarea>
         </label>
+        <label class="flex flex-col gap-1 text-xs text-text-dim">
+          开场白（可选 · 外呼连接后 AI 首先说的话）
+          <textarea
+            v-model="form.opening"
+            rows="3"
+            placeholder="如：{客户姓名}您好，我是XX银行的理财顾问小安，不好意思打扰您一下……"
+            class="rounded-md border border-line bg-bg px-2.5 py-2 font-mono text-[13px] leading-relaxed text-text outline-none focus:border-blue"
+          ></textarea>
+          <span class="text-[11px] text-text-faint">
+            模板中出现的 {客户姓名} / {电话号码} / {客户备注} 会在外呼那一刻自动替换；
+            留空则由 AI 按人设临场生成开场
+          </span>
+        </label>
         <div class="flex gap-2">
           <button
             class="rounded-md bg-teal px-4 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
@@ -200,6 +214,12 @@ onMounted(load);
         <pre
           class="mt-3 max-h-24 overflow-y-auto whitespace-pre-wrap rounded-md bg-panel-2 p-3 font-mono text-[12px] leading-relaxed text-text-dim"
         >{{ p.system_prompt }}</pre>
+        <div
+          v-if="p.opening"
+          class="mt-2 rounded-md bg-panel-2 px-3 py-2 font-mono text-[12px] leading-relaxed text-text-dim"
+        >
+          <span class="text-teal">开场白</span> · {{ p.opening }}
+        </div>
       </div>
     </div>
   </div>

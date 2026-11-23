@@ -7,6 +7,7 @@ from callbot.channel.webrtc import (
     Session,
     SessionManager,
     _parse_ice_candidate,
+    classify_call_status,
     resample_pcm_to_16k,
     validate_message,
 )
@@ -97,3 +98,29 @@ def test_resample_downmix_stereo() -> None:
     pcm = np.zeros((2, 9600), dtype=np.int16)
     out = resample_pcm_to_16k(pcm, 48000)
     assert out.shape == (3200,)
+
+
+def test_classify_call_status_empty() -> None:
+    """无任何气泡 → None（不记录：模型未就绪即断开等无效会话）。"""
+    assert classify_call_status([]) is None
+
+
+def test_classify_call_status_no_answer() -> None:
+    """AI 开过场但客户未说话 → no_answer（未接）。"""
+    assert (
+        classify_call_status([{"role": "bot", "text": "您好", "ts": 1.0}])
+        == "no_answer"
+    )
+
+
+def test_classify_call_status_connected() -> None:
+    """含客户气泡 → connected（接通）。"""
+    assert (
+        classify_call_status(
+            [
+                {"role": "bot", "text": "您好", "ts": 1.0},
+                {"role": "user", "text": "你好", "ts": 3.0},
+            ]
+        )
+        == "connected"
+    )

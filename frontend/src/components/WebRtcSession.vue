@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from "vue";
+import { fetchCustomers, type Customer } from "../api/customers";
+import { fetchPersonas, type Persona } from "../api/personas";
 import { SignalingClient } from "../api/signaling";
 import { computeAudioLevel } from "../utils/audio";
 
@@ -25,6 +27,19 @@ const interruptCount = ref(0);
 const lastLatencyMs = ref<number | null>(null);
 const waveLevel = ref(0);
 const lines = ref({ asr: "—", tts: "—" });
+const customers = ref<Customer[]>([]);
+const personas = ref<Persona[]>([]);
+const selectedCustomerId = ref("");
+const selectedPersonaId = ref("");
+
+/** 已选外呼客户（连接后头部展示；外呼必须选客户）。 */
+const selectedCustomer = computed(
+  () => customers.value.find((c) => c.id === selectedCustomerId.value) ?? null,
+);
+const maskedPhone = computed(() => {
+  const p = selectedCustomer.value?.phone ?? "";
+  return p.length >= 7 ? `${p.slice(0, 3)}****${p.slice(-4)}` : p;
+});
 
 const signaling = new SignalingClient();
 let pc: RTCPeerConnection | null = null;
@@ -48,7 +63,7 @@ const SIGNAL_URL =
 const STATE_TEXT: Record<ConnState, string> = {
   idle: "未连接",
   connecting: "连接中…（等待媒体通道建立）",
-  connected: "已连接（请说话，转写实时显示）",
+  connected: "已连接（AI 主动开场，转写实时显示）",
   error: "出错",
 };
 
@@ -77,6 +92,13 @@ const stateLampClass = computed(() => {
       return "bg-text-faint";
   }
 });
+
+async function loadSelections(): Promise<void> {
+  [customers.value, personas.value] = await Promise.all([
+    fetchCustomers().catch(() => []),
+    fetchPersonas().catch(() => []),
+  ]);
+}
 
 function pickDefault(devs: MediaDeviceInfo[]): string {
   // 优先真实麦克风（排除虚拟设备，如 LegionZone 虚拟麦克风）
@@ -227,6 +249,7 @@ async function connect(): Promise<void> {
       },
     });
     await refreshDevices();
+    await loadSelections();
 
     pc = new RTCPeerConnection();
     localStream.getTracks().forEach((t) => pc!.addTrack(t, localStream!));
@@ -317,7 +340,12 @@ async function connect(): Promise<void> {
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    signaling.send({ type: "offer", sdp: offer.sdp });
+    signaling.send({
+      type: "offer",
+      sdp: offer.sdp,
+      customer_id: selectedCustomerId.value || undefined,
+      persona_id: selectedPersonaId.value || undefined,
+    });
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
     state.value = "error";
@@ -355,6 +383,7 @@ function disconnect(): void {
 }
 
 onUnmounted(disconnect);
+void loadSelections();
 </script>
 
 <template>
@@ -375,8 +404,34 @@ onUnmounted(disconnect);
             <div class="mt-0.5 text-[11px] text-text-dim">
               {{ statusDetail || STATE_TEXT[state] }}
             </div>
+            <span
+              v-if="state === 'connected' && selectedCustomer"
+              class="mt-1.5 inline-flex items-center gap-1 rounded-md border border-teal/40 bg-panel-2 px-2 py-0.5 font-mono text-[11px] text-teal"
+            >
+              外呼对象：{{ selectedCustomer.name }} · {{ maskedPhone }}
+            </span>
           </div>
           <div class="flex items-center gap-1.5">
+            <select
+              v-model="selectedCustomerId"
+              class="max-w-[130px] rounded-md border border-line bg-panel-2 px-2 py-1.5 text-xs text-text"
+              title="外呼客户"
+            >
+              <option value="">外呼客户…</option>
+              <option v-for="c in customers" :key="c.id" :value="c.id">
+                {{ c.name }}（{{ c.phone.slice(-4) }}）
+              </option>
+            </select>
+            <select
+              v-model="selectedPersonaId"
+              class="max-w-[130px] rounded-md border border-line bg-panel-2 px-2 py-1.5 text-xs text-text"
+              title="场景人设"
+            >
+              <option value="">场景人设…</option>
+              <option v-for="p in personas" :key="p.id" :value="p.id">
+                {{ p.name }}{{ p.is_active ? "（当前）" : "" }}
+              </option>
+            </select>
             <select
               v-model="selectedDeviceId"
               class="max-w-[170px] rounded-md border border-line bg-panel-2 px-2 py-1.5 text-xs text-text"
@@ -394,10 +449,11 @@ onUnmounted(disconnect);
             </button>
             <button
               class="rounded-md bg-teal px-3.5 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="state === 'connecting' || state === 'connected'"
+              :disabled="state === 'connecting' || state === 'connected' || !selectedCustomerId"
+              :title="selectedCustomerId ? '' : '请先选择外呼客户'"
               @click="connect"
             >
-              连接
+              外呼
             </button>
             <button
               class="rounded-md border border-line bg-panel-2 px-3 py-1.5 text-xs text-text-dim transition-colors hover:border-red hover:text-red disabled:cursor-not-allowed disabled:opacity-40"
@@ -416,7 +472,7 @@ onUnmounted(disconnect);
         <!-- 气泡流 -->
         <div class="flex min-h-[240px] max-h-[400px] flex-col gap-3 overflow-y-auto p-4.5">
           <p v-if="bubbles.length === 0" class="m-auto text-[13px] text-text-faint">
-            连接后开始对话——你的语音转写与 AI 回复将在这里实时呈现
+            选择外呼客户后点击「外呼」——AI 将主动开场，对话转写实时呈现
           </p>
           <div
             v-for="(b, i) in bubbles"

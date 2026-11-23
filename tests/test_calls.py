@@ -1,17 +1,28 @@
 """通话记录 API 测试（WBS 5.3；依赖 docker postgres）。"""
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import delete
+from sqlalchemy.orm import Session
 
 from callbot.api.app import create_app
-from callbot.data.models import CallRecord, save_call_record
+from callbot.data.models import CallRecord, get_engine, save_call_record
+
+# 本次测试写入的记录 id（fixture 收尾清理；教训：测试数据不得污染生产表）
+_created_ids: list[UUID] = []
 
 
 @pytest.fixture()
 def api_client() -> TestClient:
-    return TestClient(create_app())
+    yield TestClient(create_app())
+    if _created_ids:
+        with Session(get_engine()) as s:
+            s.execute(delete(CallRecord).where(CallRecord.id.in_(_created_ids)))
+            s.commit()
+        _created_ids.clear()
 
 
 def _make_record(started_offset_s: int = -100) -> CallRecord:
@@ -30,9 +41,15 @@ def _make_record(started_offset_s: int = -100) -> CallRecord:
     )
 
 
+def _save_and_track(record: CallRecord) -> None:
+    """落库并登记 id（fixture 收尾按 id 精确删除，不误删真实记录）。"""
+    save_call_record(record)
+    _created_ids.append(record.id)
+
+
 def test_list_calls(api_client: TestClient) -> None:
     """列表返回记录（含状态文案与转写气泡）。"""
-    save_call_record(_make_record())
+    _save_and_track(_make_record())
     resp = api_client.get("/api/calls")
     assert resp.status_code == 200
     data = resp.json()
@@ -48,7 +65,7 @@ def test_list_calls(api_client: TestClient) -> None:
 def test_get_call_detail(api_client: TestClient) -> None:
     """详情返回完整气泡流。"""
     record = _make_record()
-    save_call_record(record)
+    _save_and_track(record)
     resp = api_client.get(f"/api/calls/{record.id}")
     assert resp.status_code == 200
     assert len(resp.json()["transcript"]) == 3

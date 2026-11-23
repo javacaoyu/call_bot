@@ -14,12 +14,23 @@ from callbot.data.models import Persona, get_engine
 router = APIRouter(prefix="/api", tags=["personas"])
 
 
+@router.get("/personas/variables")
+async def list_variables() -> dict[str, str]:
+    """内置可用变量（隐式注入位置：模板中出现即外呼时动态渲染；时间类系统自动注入）。"""
+    return {
+        "客户姓名": "外呼前选择的客户姓名",
+        "电话号码": "外呼前选择的客户手机号",
+        "客户备注": "外呼前选择的客户备注",
+    }
+
+
 class PersonaIn(BaseModel):
     """新建/编辑人设的请求体。"""
 
     name: str = Field(min_length=1, max_length=64)
     description: str = ""
     system_prompt: str = Field(min_length=1)
+    opening: str = ""
 
 
 def _persona_dict(p: Persona) -> dict:
@@ -28,6 +39,7 @@ def _persona_dict(p: Persona) -> dict:
         "name": p.name,
         "description": p.description,
         "system_prompt": p.system_prompt,
+        "opening": p.opening,
         "is_active": p.is_active,
         "created_at": p.created_at.isoformat(),
     }
@@ -48,6 +60,7 @@ async def create_persona(body: PersonaIn) -> dict:
         name=body.name,
         description=body.description,
         system_prompt=body.system_prompt,
+        opening=body.opening,
         is_active=False,
     )
     with Session(get_engine(), expire_on_commit=False) as session:
@@ -70,6 +83,7 @@ async def update_persona(persona_id: str, body: PersonaIn) -> dict:
         persona.name = body.name
         persona.description = body.description
         persona.system_prompt = body.system_prompt
+        persona.opening = body.opening
         session.commit()
         return _persona_dict(persona)
 

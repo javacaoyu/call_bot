@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import CallsPage from "./components/CallsPage.vue";
+import CustomersPage from "./components/CustomersPage.vue";
 import PersonasPage from "./components/PersonasPage.vue";
 import ProviderConfigPanel from "./components/ProviderConfigPanel.vue";
 import WebRtcSession from "./components/WebRtcSession.vue";
 
-type View = "chat" | "config" | "records" | "personas";
+type View = "chat" | "config" | "records" | "personas" | "customers";
 
 interface NavItem {
   id: View | string;
@@ -21,6 +22,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     items: [
       { id: "chat", label: "对话工作台", badge: "LIVE", icon: "chat" },
       { id: "records", label: "通话记录", icon: "records" },
+      { id: "customers", label: "客户管理", icon: "tpl" },
     ],
   },
   {
@@ -165,7 +167,8 @@ applyTheme(theme.value);
       <WebRtcSession v-if="view === 'chat'" />
       <ProviderConfigPanel v-else-if="view === 'config'" />
       <CallsPage v-else-if="view === 'records'" />
-      <PersonasPage v-else />
+      <PersonasPage v-else-if="view === 'personas'" />
+      <CustomersPage v-else />
     </main>
   </div>
 </template>

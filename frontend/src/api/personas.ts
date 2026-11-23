@@ -5,8 +5,16 @@ export interface Persona {
   name: string;
   description: string;
   system_prompt: string;
+  /** 开场白模板（6.2）：空串 = 未配置，由 LLM 按人设兜底生成 */
+  opening: string;
   is_active: boolean;
   created_at: string;
+}
+
+export async function fetchVariables(): Promise<Record<string, string>> {
+  const resp = await fetch("/api/personas/variables");
+  if (!resp.ok) throw new Error(`读取变量失败（${resp.status}）`);
+  return (await resp.json()) as Record<string, string>;
 }
 
 export async function fetchPersonas(): Promise<Persona[]> {

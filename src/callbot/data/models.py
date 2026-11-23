@@ -28,7 +28,9 @@ class CallRecord(Base):
 
     __tablename__ = "call_records"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     duration_s: Mapped[int] = mapped_column(Integer, default=0)
@@ -55,12 +57,35 @@ class Persona(Base):
 
     __tablename__ = "personas"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     name: Mapped[str] = mapped_column(String(64))
     description: Mapped[str] = mapped_column(Text, default="")
     system_prompt: Mapped[str] = mapped_column(Text)
+    # 开场白模板（6.2）：外呼连接后 AI 首先说的话；支持客户变量隐式注入，
+    # 空串表示未配置（由 LLM 按人设兜底生成）
+    opening: Mapped[str] = mapped_column(Text, default="")
     is_active: Mapped[bool] = mapped_column(default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class Customer(Base):
+    """外呼客户（6.2）：外呼前选择，变量插槽的姓名/电话数据源。"""
+
+    __tablename__ = "customers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(64))
+    phone: Mapped[str] = mapped_column(String(20))
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
 
 
 def init_db(settings: Settings | None = None) -> None:
@@ -81,6 +106,15 @@ def init_db(settings: Settings | None = None) -> None:
             )
             session.commit()
             logger.info("已种子默认人设")
+        if session.query(Customer).count() == 0:
+            for name, phone, notes in [
+                ("陈女士", "13800002047", "理财回访场景示例客户"),
+                ("王先生", "13900001182", "产品介绍场景示例客户"),
+                ("李女士", "13700004503", "续费提醒场景示例客户"),
+            ]:
+                session.add(Customer(name=name, phone=phone, notes=notes))
+            session.commit()
+            logger.info("已种子 3 条示例客户")
 
 
 def save_call_record(
