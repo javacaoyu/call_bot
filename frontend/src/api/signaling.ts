@@ -12,6 +12,7 @@ export interface SignalMessage {
     | "reply"
     | "audio"
     | "stop_audio"
+    | "end"
     | "playback_done"
     | "bye";
   sdp?: string;
@@ -25,6 +26,7 @@ export interface SignalMessage {
   snapshot?: boolean;
   customer_id?: string;
   persona_id?: string;
+  scene_id?: string;
 }
 
 export class SignalingClient {

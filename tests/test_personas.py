@@ -14,16 +14,20 @@ from callbot.data.models import Persona, get_engine
 @pytest.fixture()
 def api_client() -> TestClient:
     """⚠️ 不清生产表（曾误删用户人设数据）；测试数据用「测试人设」前缀，
-    测试后只清理自己创建的记录。"""
+    测试后只清理自己创建的记录，并恢复**测试前**的激活人设（不覆盖用户选择）。"""
     client = TestClient(create_app())
+    with Session(get_engine()) as s:
+        active_before = s.scalars(select(Persona).where(Persona.is_active).limit(1)).first()
+        active_id = active_before.id if active_before is not None else None
     yield client
     with Session(get_engine()) as s:
         s.execute(delete(Persona).where(Persona.name.like("测试人设%")))
-        # 恢复激活状态到「默认客服」（测试激活会挤掉用户人设）
-        default = s.scalars(select(Persona).where(Persona.name == "默认客服")).first()
-        if default is not None:
-            s.execute(update(Persona).values(is_active=False))
-            default.is_active = True
+        # 恢复激活状态到测试前（测试激活会挤掉用户人设）
+        s.execute(update(Persona).values(is_active=False))
+        if active_id is not None:
+            target = s.get(Persona, active_id)
+            if target is not None:
+                target.is_active = True
         s.commit()
 
 
@@ -37,11 +41,12 @@ def _create(client: TestClient, name: str = "测试人设") -> dict:
 
 
 def test_list_seeded_default(api_client: TestClient) -> None:
-    """启动种子：默认人设存在且激活（不清用户数据）。"""
+    """启动种子：默认人设存在；激活互斥成立（恰一个激活，不限定是谁）。"""
     data = api_client.get("/api/personas").json()
     default = next((x for x in data if x["name"] == "默认客服"), None)
     assert default is not None
-    assert default["is_active"] is True
+    active = [x for x in data if x["is_active"]]
+    assert len(active) == 1
 
 
 def test_create_update_delete(api_client: TestClient) -> None:
@@ -216,6 +221,28 @@ def test_render_with_context_notes() -> None:
     assert "备注：理财回访" in out
 
 
+def test_build_handler_system_prompt_merge() -> None:
+    """handler prompt 追加非替代：人设打底 + 节点话术在后。"""
+    from callbot.data.personas import build_handler_system_prompt
+
+    out = build_handler_system_prompt(
+        "你是银行催收专员。",
+        "就耽误{客户姓名}5秒时间",
+        {"name": "陈女士", "phone": "138", "notes": ""},
+    )
+    assert out.startswith("你是银行催收专员。")  # 人设打底（稳定前缀）
+    assert "本环节话术要求" in out
+    assert out.index("你是银行催收专员") < out.index("就耽误陈女士5秒时间")  # 追加在后
+    assert "当前时间" not in out  # 节点话术段不附时间行
+
+
+def test_build_handler_system_prompt_empty_extra() -> None:
+    """空话术 = 仅人设。"""
+    from callbot.data.personas import build_handler_system_prompt
+
+    assert build_handler_system_prompt("BASE", "  ") == "BASE"
+
+
 def test_resolve_opening_priority(api_client: TestClient) -> None:
     """所选人设开场白优先；激活人设兜底（6.2）。"""
     from callbot.data.personas import resolve_opening
@@ -272,3 +299,30 @@ def test_customer_update_delete(api_client: TestClient) -> None:
     assert api_client.delete(f"/api/customers/{created['id']}").status_code == 200
     names = [c["name"] for c in api_client.get("/api/customers").json()]
     assert "临时客户改" not in names
+
+
+def test_persona_scene_field(api_client: TestClient) -> None:
+    """人设场景（6.3）：缺省归默认场景；显式指定生效；列表可过滤。"""
+    # 缺省 scene_id → 默认场景
+    p = _create(api_client)
+    assert p["scene_name"] == "通用客服"
+    # 新建场景 → 人设挂到该场景
+    scene = api_client.post(
+        "/api/scenes", json={"name": "测试场景人设", "description": ""}
+    ).json()
+    p2 = api_client.post(
+        "/api/personas",
+        json={
+            "name": "测试人设场景化",
+            "description": "",
+            "system_prompt": "你是测试。",
+            "scene_id": scene["id"],
+        },
+    ).json()
+    assert p2["scene_name"] == "测试场景人设"
+    # 按场景过滤
+    filtered = api_client.get(f"/api/personas?scene_id={scene['id']}").json()
+    assert [x["id"] for x in filtered] == [p2["id"]]
+    # 清理场景（人设已被 fixture 前缀清理，但人设挂场景 → 先删人设再删场景）
+    api_client.delete(f"/api/personas/{p2['id']}")
+    api_client.delete(f"/api/scenes/{scene['id']}")

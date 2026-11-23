@@ -2,11 +2,22 @@
 import { ref } from "vue";
 import CallsPage from "./components/CallsPage.vue";
 import CustomersPage from "./components/CustomersPage.vue";
+import FlowEditorPage from "./components/FlowEditorPage.vue";
 import PersonasPage from "./components/PersonasPage.vue";
 import ProviderConfigPanel from "./components/ProviderConfigPanel.vue";
+import ScenesPage from "./components/ScenesPage.vue";
+import ToolsPage from "./components/ToolsPage.vue";
 import WebRtcSession from "./components/WebRtcSession.vue";
 
-type View = "chat" | "config" | "records" | "personas" | "customers";
+type View =
+  | "chat"
+  | "config"
+  | "records"
+  | "personas"
+  | "customers"
+  | "scenes"
+  | "tools"
+  | "flow";
 
 interface NavItem {
   id: View | string;
@@ -23,6 +34,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { id: "chat", label: "对话工作台", badge: "LIVE", icon: "chat" },
       { id: "records", label: "通话记录", icon: "records" },
       { id: "customers", label: "客户管理", icon: "tpl" },
+      { id: "scenes", label: "场景管理", icon: "tpl" },
     ],
   },
   {
@@ -30,7 +42,8 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     items: [
       { id: "config", label: "线路配置", icon: "lines" },
       { id: "personas", label: "人设管理", icon: "tpl" },
-      { id: "flow", label: "话术编排", soon: true, icon: "flow" },
+      { id: "flow", label: "话术编排", icon: "flow" },
+      { id: "tools", label: "工具库", icon: "flow" },
       { id: "templates", label: "模板库", soon: true, icon: "tpl" },
       { id: "kb", label: "知识库", soon: true, icon: "kb" },
     ],
@@ -45,6 +58,13 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
 ];
 
 const view = ref<View>("chat");
+/** 页面上下文参数（流程编排/工具库的当前场景 id） */
+const pageScene = ref("");
+
+function navigate(next: View, scene = ""): void {
+  view.value = next;
+  pageScene.value = scene;
+}
 const theme = ref(
   localStorage.getItem("callbot-theme") === "light" ? "light" : "dark",
 );
@@ -92,7 +112,7 @@ applyTheme(theme.value);
                   ? 'cursor-not-allowed text-text-faint opacity-60'
                   : 'text-text-dim hover:bg-panel-2 hover:text-text',
             ]"
-            @click.prevent="!item.soon && (view = item.id as View)"
+            @click.prevent="!item.soon && navigate(item.id as View)"
           >
             <!-- 图标 -->
             <svg
@@ -168,7 +188,10 @@ applyTheme(theme.value);
       <ProviderConfigPanel v-else-if="view === 'config'" />
       <CallsPage v-else-if="view === 'records'" />
       <PersonasPage v-else-if="view === 'personas'" />
-      <CustomersPage v-else />
+      <CustomersPage v-else-if="view === 'customers'" />
+      <ScenesPage v-else-if="view === 'scenes'" @navigate="(v, s) => navigate(v, s)" />
+      <ToolsPage v-else-if="view === 'tools'" :scene-id="pageScene" />
+      <FlowEditorPage v-else-if="view === 'flow'" :scene-id="pageScene" />
     </main>
   </div>
 </template>

@@ -2,6 +2,7 @@
 import { computed, onUnmounted, ref } from "vue";
 import { fetchCustomers, type Customer } from "../api/customers";
 import { fetchPersonas, type Persona } from "../api/personas";
+import { fetchScenes, type Scene } from "../api/scenes";
 import { SignalingClient } from "../api/signaling";
 import { computeAudioLevel } from "../utils/audio";
 
@@ -29,8 +30,16 @@ const waveLevel = ref(0);
 const lines = ref({ asr: "—", tts: "—" });
 const customers = ref<Customer[]>([]);
 const personas = ref<Persona[]>([]);
+const scenes = ref<Scene[]>([]);
 const selectedCustomerId = ref("");
 const selectedPersonaId = ref("");
+const selectedSceneId = ref("");
+
+/** 人设按所选场景过滤（场景 = 话术资产组织单元，6.3） */
+const personasForScene = computed(() => {
+  if (!selectedSceneId.value) return personas.value;
+  return personas.value.filter((p) => p.scene_id === selectedSceneId.value);
+});
 
 /** 已选外呼客户（连接后头部展示；外呼必须选客户）。 */
 const selectedCustomer = computed(
@@ -53,6 +62,8 @@ const activeSources: AudioBufferSourceNode[] = [];
 // 播放确认：向后端报告最后播到的帧序号（打断窗口 = 前端播报中）
 let lastAudioSeq = 0;
 let audioQueued = false;
+// 流程结束标记（6.3）：后端 end 消息到达后，等结束语播完自动断开
+let flowEnded = false;
 let callTimer: ReturnType<typeof setInterval> | null = null;
 let utteranceAt = 0;
 
@@ -94,10 +105,14 @@ const stateLampClass = computed(() => {
 });
 
 async function loadSelections(): Promise<void> {
-  [customers.value, personas.value] = await Promise.all([
+  [customers.value, personas.value, scenes.value] = await Promise.all([
     fetchCustomers().catch(() => []),
     fetchPersonas().catch(() => []),
+    fetchScenes().catch(() => []),
   ]);
+  if (!selectedSceneId.value && scenes.value.length > 0) {
+    selectedSceneId.value = scenes.value[0].id;
+  }
 }
 
 function pickDefault(devs: MediaDeviceInfo[]): string {
@@ -195,6 +210,8 @@ function confirmPlaybackDone(): void {
     audioQueued = false;
     signaling.send({ type: "playback_done", seq: lastAudioSeq });
     if (talkState.value === "speaking") talkState.value = "listening";
+    // 流程结束语播完 → 自动断开（bye 落库链路复用）
+    if (flowEnded) disconnect();
   }
 }
 
@@ -327,6 +344,11 @@ async function connect(): Promise<void> {
       } else if (msg.type === "stop_audio") {
         // 打断：立即停播（后端已清未发队列）
         stopPlayback(true);
+      } else if (msg.type === "end") {
+        // 流程结束（6.3）：等结束语播完自动断开；已播完则立即断开
+        statusDetail.value = "会话已结束，正在断开…";
+        flowEnded = true;
+        if (activeSources.length === 0) disconnect();
       }
     });
     signaling.onClose(() => {
@@ -345,6 +367,7 @@ async function connect(): Promise<void> {
       sdp: offer.sdp,
       customer_id: selectedCustomerId.value || undefined,
       persona_id: selectedPersonaId.value || undefined,
+      scene_id: selectedSceneId.value || undefined,
     });
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -378,6 +401,7 @@ function disconnect(): void {
   bubbles.value = []; // 清空气泡（避免下次连接看到上轮的打断标记等残留）
   interruptCount.value = 0;
   lastLatencyMs.value = null;
+  flowEnded = false;
   state.value = "idle";
   talkState.value = "idle";
 }
@@ -413,6 +437,13 @@ void loadSelections();
           </div>
           <div class="flex items-center gap-1.5">
             <select
+              v-model="selectedSceneId"
+              class="max-w-[130px] rounded-md border border-line bg-panel-2 px-2 py-1.5 text-xs text-text"
+              title="话术场景（流程/人设/工具）"
+            >
+              <option v-for="s in scenes" :key="s.id" :value="s.id">{{ s.name }}</option>
+            </select>
+            <select
               v-model="selectedCustomerId"
               class="max-w-[130px] rounded-md border border-line bg-panel-2 px-2 py-1.5 text-xs text-text"
               title="外呼客户"
@@ -428,7 +459,7 @@ void loadSelections();
               title="场景人设"
             >
               <option value="">场景人设…</option>
-              <option v-for="p in personas" :key="p.id" :value="p.id">
+              <option v-for="p in personasForScene" :key="p.id" :value="p.id">
                 {{ p.name }}{{ p.is_active ? "（当前）" : "" }}
               </option>
             </select>

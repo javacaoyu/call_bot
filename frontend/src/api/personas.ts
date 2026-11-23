@@ -8,6 +8,9 @@ export interface Persona {
   /** 开场白模板（6.2）：空串 = 未配置，由 LLM 按人设兜底生成 */
   opening: string;
   is_active: boolean;
+  /** 场景（6.3）：从场景库选择 */
+  scene_id: string | null;
+  scene_name: string | null;
   created_at: string;
 }
 
@@ -17,14 +20,17 @@ export async function fetchVariables(): Promise<Record<string, string>> {
   return (await resp.json()) as Record<string, string>;
 }
 
-export async function fetchPersonas(): Promise<Persona[]> {
-  const resp = await fetch("/api/personas");
+export async function fetchPersonas(sceneId?: string): Promise<Persona[]> {
+  const url = sceneId
+    ? `/api/personas?scene_id=${encodeURIComponent(sceneId)}`
+    : "/api/personas";
+  const resp = await fetch(url);
   if (!resp.ok) throw new Error(`读取人设失败（${resp.status}）`);
   return (await resp.json()) as Persona[];
 }
 
 export async function createPersona(
-  body: Omit<Persona, "id" | "is_active" | "created_at">,
+  body: Omit<Persona, "id" | "is_active" | "created_at" | "scene_name">,
 ): Promise<Persona> {
   const resp = await fetch("/api/personas", {
     method: "POST",
@@ -37,7 +43,7 @@ export async function createPersona(
 
 export async function updatePersona(
   id: string,
-  body: Omit<Persona, "id" | "is_active" | "created_at">,
+  body: Omit<Persona, "id" | "is_active" | "created_at" | "scene_name">,
 ): Promise<Persona> {
   const resp = await fetch(`/api/personas/${id}`, {
     method: "PUT",

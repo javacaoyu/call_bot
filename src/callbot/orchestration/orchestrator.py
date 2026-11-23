@@ -13,6 +13,7 @@ from typing import Protocol
 from callbot.orchestration.context import (
     DEFAULT_MAX_HISTORY_TOKENS,
     DEFAULT_SYSTEM_PROMPT,
+    INTERRUPTED_PLACEHOLDER,
     HistoryManager,
     PromptBuilder,
 )
@@ -20,10 +21,6 @@ from callbot.providers.llm import ChatMessage, DeepSeekStreamingLLM
 
 logger = logging.getLogger(__name__)
 
-
-# 打断轮且已说 0 句时的 assistant 占位：保持历史形态（user→assistant→user），
-# 否则模型看到连续多条 user 消息无人回复，会逐个补答历史问题
-_INTERRUPTED_PLACEHOLDER = "（上一句回复被打断）"
 
 
 class Orchestrator(Protocol):
@@ -67,7 +64,7 @@ class SimpleOrchestrator:
         身份入历史——已说 0 句则注入占位，保持 user→assistant 形态。
         """
         if spoken_prefix is not None:
-            self._history.add_assistant(spoken_prefix or _INTERRUPTED_PLACEHOLDER)
+            self._history.add_assistant(spoken_prefix or INTERRUPTED_PLACEHOLDER)
         messages: Sequence[ChatMessage] = self._builder.build(
             self._history.messages(), user_text
         )
@@ -117,7 +114,7 @@ class AgentScopeOrchestrator:
                 Msg(
                     name="assistant",
                     role="assistant",
-                    content=[TextBlock(text=spoken_prefix or _INTERRUPTED_PLACEHOLDER)],
+                    content=[TextBlock(text=spoken_prefix or INTERRUPTED_PLACEHOLDER)],
                 ),
             )
         async for event in self._agent.reply_stream(

@@ -30,7 +30,9 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from callbot.config import Settings
+from callbot.data.models import Flow, get_engine
 from callbot.data.personas import (
+    build_handler_system_prompt,
     get_active_persona_prompt,
     get_active_persona_template,
     get_persona_prompt,
@@ -42,7 +44,13 @@ from callbot.engine.frames import AudioFrame
 from callbot.engine.joiner import SpeechJoiner
 from callbot.engine.state import EngineState
 from callbot.engine.vad import SileroVAD, VADEvent
-from callbot.orchestration.orchestrator import Orchestrator, create_orchestrator
+from callbot.flow.definitions import build_default_flow, intent_configs_from
+from callbot.flow.intent import build_agentscope_classify_fn
+from callbot.flow.runner import FlowRunner, FlowState
+from callbot.orchestration.flow_orchestrator import (
+    FlowOrchestrator,
+    create_flow_orchestrator,
+)
 from callbot.providers.asr import ASRResult, StreamingASR
 from callbot.providers.base import (
     asr_config_from_settings,
@@ -52,6 +60,7 @@ from callbot.providers.base import (
 )
 from callbot.providers.config_store import apply_provider_overrides
 from callbot.providers.tts import StreamingTTS
+from callbot.tools.executors import build_toolkit
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +98,35 @@ def get_shared_tts(settings: Settings) -> StreamingTTS:
         _SHARED_TTS = create_tts(tts_config_from_settings(settings))
         _SHARED_TTS.load()
     return _SHARED_TTS
+
+
+def load_published_flow(settings: Settings, scene_id: str | None = None) -> dict:
+    """取场景的发布版流程定义；未选/未发布 → 最早发布的流程（种子默认流程）。
+
+    兼容 6.2：无任何发布流程时返回内置默认定义（开场白双轨语义）。
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    with Session(get_engine(settings)) as s:
+        flow: Flow | None = None
+        if scene_id:
+            try:
+                import uuid
+
+                flow = s.scalars(
+                    select(Flow).where(Flow.scene_id == uuid.UUID(scene_id))
+                ).first()
+            except ValueError:
+                flow = None
+        if flow is not None and flow.published is not None:
+            return flow.published
+        fallback = s.scalars(
+            select(Flow).where(Flow.published.is_not(None)).order_by(Flow.created_at)
+        ).first()
+        if fallback is not None:
+            return fallback.published
+        return build_default_flow()
 
 
 def classify_call_status(transcript: list[dict]) -> str | None:
@@ -381,6 +419,8 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
     reply_in_progress = False
     reply_task: asyncio.Task[None] | None = None
     finish_task: asyncio.Task[None] | None = None  # 收尾 task 单引用（串行化）
+    pending_end = False  # VAD 端点被挡（打断窗口未收敛）→ 待重试收尾
+    retry_task: asyncio.Task[None] | None = None  # 端点重试 task 单引用
     pending_spoken: list[str] = []  # 打断上下文：本轮已完整说出的句子
     interrupted_this_turn = False  # 本轮回复是否被打断过（决定 spoken_prefix 注入）
     audio_seq = 0  # 已发送音频帧序号（每帧递增）
@@ -403,7 +443,10 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
         会被误判为正常轮次（后端已发完但前端还在播）。
         """
         return audio_seq > confirmed_audio_seq
-    orch: Orchestrator | None = None
+
+    # 6.3 流程会话状态（offer 时装配）
+    flow_runner: FlowRunner | None = None
+    flow_orch: FlowOrchestrator | None = None
 
     async def send_json(payload: dict[str, Any]) -> None:
         try:
@@ -473,73 +516,86 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
             idle_record_task.cancel()
         idle_record_task = asyncio.ensure_future(schedule_idle_record())
 
-    async def run_reply(
+    # ---------- 6.3 流程编排装配（共享状态 + 意图中枢） ----------
+    def persona_prompt() -> str:
+        """人设 system prompt（会话级渲染：客户变量 + 时间行）。"""
+        template = get_persona_prompt(selected_persona_id, settings)
+        if template is None:
+            template = get_active_persona_template(settings)
+        if template is not None:
+            return render_with_context(template, customer_info)
+        return get_active_persona_prompt(settings)
+
+    def resolve_handler_prompt(node: dict[str, Any]) -> str:
+        """handler 节点 → system prompt：人设打底 + 节点话术追加（非替代）。
+
+        实测教训：节点 prompt 完全替代人设时，LLM 无身份背景会自行
+        脑补身份（被当成 AI 服务商推销）——必须追加在人设之后。
+        """
+        prompt = ((node.get("data") or {}).get("prompt") or "").strip()
+        return build_handler_system_prompt(persona_prompt(), prompt, customer_info)
+
+    def get_flow_orch() -> FlowOrchestrator:
+        """会话级流程编排层（共享状态 + 按节点路由）；首调懒创建。"""
+        nonlocal flow_orch
+        if flow_orch is None:
+            flow_orch = create_flow_orchestrator(
+                kind=settings.orchestration_backend,
+                base_url=settings.llm_base_url,
+                api_key=settings.llm_api_key,
+                model=settings.llm_model,
+                resolve_prompt=resolve_handler_prompt,
+                tool_resolver=lambda ids: build_toolkit(ids, settings),
+            )
+        return flow_orch
+
+    async def flow_open_stream() -> AsyncIterator[str]:
+        """开场白口播流（6.2 双轨）：配置直读；未配置 → LLM 兜底。"""
+        opening = resolve_opening(selected_persona_id, settings, customer_info)
+        if opening:
+            yield opening
+            return
+        name = customer_info["name"] if customer_info else "客户"
+        trigger = f"（通话开始，请主动开口：向{name}打招呼、报出身份并说明来意）"
+        logger.info("开场白 LLM 兜底生成: 客户=%s", name)
+        async for token in get_flow_orch().stream_opening(trigger, persona_prompt()):
+            yield token
+
+    async def flow_reply(
+        node: dict[str, Any],
         text: str,
         spoken_prefix: str | None = None,
-        *,
-        direct: bool = False,
-    ) -> None:
-        """回复管线：编排层 → joiner → 引擎 FIFO → 并发推送音频帧。
+    ) -> AsyncIterator[str]:
+        """handler 回复流：经共享状态编排层按节点路由。"""
+        async for token in get_flow_orch().stream_handler_reply(
+            node, text, spoken_prefix
+        ):
+            yield token
 
-        spoken_prefix：打断上下文重建素材——打断轮为已说句子（可空串，
-        编排层注入占位）；正常轮为 None。
-        direct：text 为定稿口播文本（6.2 开场白直读）——直接合成，
-        不走 LLM、不建编排器。
-        打断时本 task 被 cancel → token 流 aclose → LLM 关流。
+    async def bot_token(token: str) -> None:
+        """推送 reply 消息 + 落 bot 气泡（所有口播 token 共用，5.3）。"""
+        await send_json({"type": "reply", "text": token})
+        ts = round(time.monotonic(), 2)
+        if transcript_log and transcript_log[-1]["role"] == "bot":
+            transcript_log[-1]["text"] += token
+            transcript_log[-1]["ts"] = ts
+        else:
+            transcript_log.append({"role": "bot", "text": token, "ts": ts})
+
+    async def speak_stream(tokens_iter: AsyncIterator[str]) -> None:
+        """通用口播管线：token 流 → joiner → 引擎 FIFO → 并发推送音频帧。
+
+        打断时本 task 被 cancel → 生成器 aclose（FlowRunner finally 回
+        awaiting / LLM 关流）→ drain 随队列清空退出。
         """
         nonlocal reply_in_progress
-        nonlocal orch
         reply_in_progress = True
         engine = session.engine
         assert engine is not None
         try:
-            # 编排器每会话只建一次：多轮对话历史跨轮保留；
-            # direct（开场白直读）不建——开场不消耗 LLM
-            if orch is None and not direct:
-                # 6.1/6.2 人设 + 变量：外呼前选择的场景人设优先；
-                # 渲染客户变量（{客户姓名}/{电话号码}）+ 时间行
-                template = get_persona_prompt(selected_persona_id, settings)
-                if template is None:
-                    template = get_active_persona_template(settings)
-                system_prompt = (
-                    render_with_context(template, customer_info)
-                    if template is not None
-                    else get_active_persona_prompt(settings)
-                )
-                orch = create_orchestrator(
-                    kind=settings.orchestration_backend,
-                    base_url=settings.llm_base_url,
-                    api_key=settings.llm_api_key,
-                    model=settings.llm_model,
-                    system_prompt=system_prompt,
-                )
             tts = await asyncio.to_thread(get_shared_tts, settings)
             joiner = SpeechJoiner(tts)
             engine.mark_thinking()
-
-            async def tokens() -> AsyncIterator[str]:  # noqa: ANN202
-                if direct:
-                    # 开场白直读：一次推全量文本（气泡 + 落库），joiner 按标点分段合成
-                    await send_json({"type": "reply", "text": text})
-                    ts = round(time.monotonic(), 2)
-                    if transcript_log and transcript_log[-1]["role"] == "bot":
-                        transcript_log[-1]["text"] += text
-                        transcript_log[-1]["ts"] = ts
-                    else:
-                        transcript_log.append({"role": "bot", "text": text, "ts": ts})
-                    yield text
-                    return
-                assert orch is not None
-                async for token in orch.stream_reply(text, spoken_prefix):
-                    await send_json({"type": "reply", "text": token})
-                    # 通话记录（5.3）：bot 气泡合并
-                    ts = round(time.monotonic(), 2)
-                    if transcript_log and transcript_log[-1]["role"] == "bot":
-                        transcript_log[-1]["text"] += token
-                        transcript_log[-1]["ts"] = ts
-                    else:
-                        transcript_log.append({"role": "bot", "text": token, "ts": ts})
-                    yield token
 
             async def drain() -> None:
                 """并发排空输出 FIFO：帧到达即推送，低延迟。"""
@@ -554,7 +610,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
 
             drain_task = asyncio.ensure_future(drain())
             try:
-                async for frame in joiner.run(tokens()):
+                async for frame in joiner.run(tokens_iter):
                     engine.enqueue_output(frame)  # 首帧自动进入 SPEAKING
             finally:
                 reply_in_progress = False
@@ -565,24 +621,113 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
             reply_in_progress = False
         arm_idle_record()  # 一轮回复结束：重新计时空闲落库（5.3）
 
-    async def start_opening() -> None:
-        """外呼开场（6.2）：模型就绪后 AI 首先说话，客户必已知。
+    async def start_flow() -> None:
+        """外呼开场（6.2/6.3）：FlowRunner.start() 开场白节点 → 口播管线。
 
-        配置了开场白模板 → 渲染后直读合成（确定性、快、运营可控）；
-        未配置 → LLM 按人设兜底生成（触发文本注入客户姓名）。
-        **6.3 流程编排接入点**：流程图起始节点将替换本函数。
+        6.3 流程编排起始节点接入点（原 start_opening 钩子升级）。
         """
         nonlocal reply_task
-        opening = resolve_opening(selected_persona_id, settings, customer_info)
         await send_json({"type": "status", "detail": "AI 开场中…"})
-        if opening:
-            logger.info("开场白直读: %s", opening)
-            reply_task = asyncio.ensure_future(run_reply(opening, direct=True))
+
+        async def tokens() -> AsyncIterator[str]:  # noqa: ANN202
+            assert flow_runner is not None
+            async for token in flow_runner.start():
+                await bot_token(token)
+                yield token
+
+        reply_task = asyncio.ensure_future(speak_stream(tokens()))
+
+    async def run_flow_turn(text: str, spoken_prefix: str | None) -> None:
+        """每轮回复（6.3）：FlowRunner.on_user_text → 口播管线；ENDED → 通知前端。"""
+        assert flow_runner is not None
+
+        async def tokens() -> AsyncIterator[str]:  # noqa: ANN202
+            async for token in flow_runner.on_user_text(text, spoken_prefix):
+                await bot_token(token)
+                yield token
+
+        await speak_stream(tokens())
+        # 结束语播完（音频已排空）→ 通知前端挂断
+        if flow_runner.state is FlowState.ENDED:
+            logger.info("流程已结束，通知前端挂断")
+            await send_json({"type": "end"})
+
+
+    async def finish_utterance() -> None:
+        """收尾宽限：等云端 ASR 判停增量并入后再送回复。
+
+        宽限期内增量继续 append；若宽限期结束 utterance 仍空
+        （千问 finish-task 后服务端推最终句约 1-2s），继续
+        轮询等待（最多 5s）。等待期若 VAD 又起音（flushed
+        被重置 = 用户开始说下一句），本收尾作废交新轮——
+        防止两个收尾 task 并发 join 混句。
+        """
+        nonlocal reply_task, interrupted_this_turn
+        logger.info("收尾启动: settle=%dms", settings.utterance_settle_ms)
+        await asyncio.sleep(settings.utterance_settle_ms / 1000)
+        deadline = time.monotonic() + 5.0
+        while not utterance and time.monotonic() < deadline:
+            if not flushed:  # noqa: B023 - 函数级变量（循环外定义），需运行时最新值
+                logger.info("收尾作废：检测到新语音，交新轮")
+                return
+            await asyncio.sleep(0.2)
+        logger.info("收尾 join: utterance_len=%d", len(utterance))
+        text = "".join(utterance).strip()
+        utterance.clear()
+        if text:
+            logger.info("完整转写: %s", text)
+            await send_json({"type": "utterance", "text": text})
+            if interrupted_this_turn:
+                # 打断轮：注入已说句子（可空，编排层补占位）
+                prefix: str | None = "".join(pending_spoken)
+            else:
+                prefix = None
+            pending_spoken.clear()
+            interrupted_this_turn = False
+            reply_task = asyncio.ensure_future(run_flow_turn(text, prefix))
+
+    def start_finish_utterance() -> None:
+        """端点收尾入口：flush ASR + 串行化 finish_utterance（正常端点与重试共用）。"""
+        nonlocal flushed, finish_task
+        if flushed:
             return
-        name = customer_info["name"] if customer_info else "客户"
-        trigger = f"（通话开始，请主动开口：向{name}打招呼、报出身份并说明来意）"
-        logger.info("开场白 LLM 兜底生成: 客户=%s", name)
-        reply_task = asyncio.ensure_future(run_reply(trigger))
+        engine = session.engine
+        if engine is None:
+            return
+        flushed = True
+        engine.flush_asr()
+        # 串行化：新轮收尾接管前取消上一收尾 task
+        if finish_task is not None and not finish_task.done():
+            finish_task.cancel()
+        finish_task = asyncio.ensure_future(finish_utterance())
+
+    async def retry_pending_end() -> None:
+        """打断后端点被挡的补救（实测卡死根因修复）。
+
+        VAD 端点为边缘触发（一段静音只发一次），被挡后不会重发；
+        等打断窗口收敛（playback/reply 结束、引擎回 LISTENING）后
+        补执行收尾；客户再次开口则作废交新端点。
+        """
+        nonlocal pending_end, flushed
+        deadline = time.monotonic() + 3.0
+        while pending_end and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            engine = session.engine
+            if engine is None or reply_in_progress or playback_active():
+                continue
+            if engine.state != EngineState.LISTENING:
+                continue
+            if vad.in_speech:
+                logger.info("重试收尾作废：客户已再次开口，交新端点")
+                pending_end = False
+                return
+            pending_end = False
+            logger.info("重试收尾：打断窗口已收敛，补执行 flush")
+            start_finish_utterance()
+            return
+        if pending_end:
+            logger.warning("重试收尾超时未收敛，放弃本轮")
+            pending_end = False
 
     async def handle_interrupt(started_at: float) -> None:
         """打断动作链（3.3）：停音频 + 关 LLM 流 + 暂存已说句子。
@@ -633,6 +778,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                         flushed,
                     )
                     flushed = False  # 新语音段到达，重置收尾门控
+                    pending_end = False  # 新语音段：作废待重试的旧端点
                     if reply_in_progress or playback_active():
                         asyncio.ensure_future(handle_interrupt(time.perf_counter()))
                 elif event is VADEvent.SPEECH_END:
@@ -644,66 +790,22 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                         or engine.state != EngineState.LISTENING
                         or flushed
                     ):
+                        # 打断窗口未收敛（stop_audio 后前端尚未回 playback_done）
+                        # → 端点不丢弃：VAD 为边缘触发不会重发，必须自行重试
                         logger.info(
-                            "VAD 端点被挡: engine=%s reply=%s playback=%s state=%s flushed=%s",
+                            "VAD 端点被挡（待打断窗口收敛后重试）: engine=%s reply=%s"
+                            " playback=%s state=%s flushed=%s",
                             engine is not None,
                             reply_in_progress,
                             playback_active(),
                             engine.state if engine else None,
                             flushed,
                         )
-                    # 注意：不能要求 utterance 非空——千问等句级修订式 ASR 的
-                    # 中间结果 text 为空（快照语义），最终句要等 flush 才推；
-                    # 空转写 flush 后 finish_utterance 判空不回复，无害。
-                    if (
-                        engine is not None
-                        and not reply_in_progress
-                        and not playback_active()
-                        and engine.state == EngineState.LISTENING
-                        and not flushed
-                    ):
-                        flushed = True
-                        engine.flush_asr()
-
-                        async def finish_utterance() -> None:
-                            """收尾宽限：等云端 ASR 判停增量并入后再送回复。
-
-                            宽限期内增量继续 append；若宽限期结束 utterance 仍空
-                            （千问 finish-task 后服务端推最终句约 1-2s），继续
-                            轮询等待（最多 5s）。等待期若 VAD 又起音（flushed
-                            被重置 = 用户开始说下一句），本收尾作废交新轮——
-                            防止两个收尾 task 并发 join 混句。
-                            """
-                            nonlocal reply_task, interrupted_this_turn
-                            logger.info("收尾启动: settle=%dms", settings.utterance_settle_ms)
-                            await asyncio.sleep(settings.utterance_settle_ms / 1000)
-                            deadline = time.monotonic() + 5.0
-                            while not utterance and time.monotonic() < deadline:
-                                if not flushed:  # noqa: B023 - 函数级变量（循环外定义），需运行时最新值
-                                    logger.info("收尾作废：检测到新语音，交新轮")
-                                    return
-                                await asyncio.sleep(0.2)
-                            logger.info("收尾 join: utterance_len=%d", len(utterance))
-                            text = "".join(utterance).strip()
-                            utterance.clear()
-                            if text:
-                                logger.info("完整转写: %s", text)
-                                await send_json({"type": "utterance", "text": text})
-                                if interrupted_this_turn:
-                                    # 打断轮：注入已说句子（可空，编排层补占位）
-                                    prefix: str | None = "".join(pending_spoken)
-                                else:
-                                    prefix = None
-                                pending_spoken.clear()
-                                interrupted_this_turn = False
-                                reply_task = asyncio.ensure_future(
-                                    run_reply(text, prefix)
-                                )
-
-                        # 串行化：新轮收尾接管前取消上一收尾 task
-                        if finish_task is not None and not finish_task.done():
-                            finish_task.cancel()
-                        finish_task = asyncio.ensure_future(finish_utterance())
+                        pending_end = True
+                        if retry_task is None or retry_task.done():
+                            retry_task = asyncio.ensure_future(retry_pending_end())
+                    else:
+                        start_finish_utterance()
                 if session is not None and session.engine is not None:
                     session.engine.feed_audio(frame)
                 continue
@@ -751,6 +853,31 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                 if isinstance(persona_id, str) and persona_id:
                     selected_persona_id = persona_id
                     logger.info("场景人设: %s", persona_id)
+                # 6.3 话术流程：所选场景的发布版流程 → FlowRunner
+                #（未选/未发布 → 默认流程，兼容 6.2 行为）
+                scene_id = msg.get("scene_id")
+                if isinstance(scene_id, str) and scene_id:
+                    logger.info("外呼场景: %s", scene_id)
+                flow_definition = load_published_flow(settings, scene_id)
+                classify_fn = None
+                if settings.orchestration_backend == "agentscope":
+                    classify_fn = build_agentscope_classify_fn(
+                        intent_configs_from(flow_definition),
+                        settings.llm_base_url,
+                        settings.llm_api_key,
+                        settings.llm_model,
+                    )
+                flow_runner = FlowRunner(
+                    flow_definition,
+                    open_stream=flow_open_stream,
+                    reply=flow_reply,
+                    classify_fn=classify_fn,
+                )
+                logger.info(
+                    "流程已加载: %d 节点 %d 边",
+                    len(flow_definition.get("nodes", [])),
+                    len(flow_definition.get("edges", [])),
+                )
                 pc = RTCPeerConnection()
                 session = Session(peer=pc, id=str(id(pc)))
                 manager.add(session)
@@ -765,7 +892,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                     settings,
                     lambda: handle_interrupt(time.perf_counter()),
                     transcript_log,
-                    on_ready=start_opening,
+                    on_ready=start_flow,
                 )
                 await pc.setRemoteDescription(
                     RTCSessionDescription(sdp=msg["sdp"], type="offer")

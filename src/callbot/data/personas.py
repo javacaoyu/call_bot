@@ -179,3 +179,20 @@ def resolve_opening(
     if template is None:
         return None
     return render_opening(template, customer)
+
+
+def build_handler_system_prompt(
+    base: str,
+    extra: str,
+    customer: dict[str, str] | None = None,
+) -> str:
+    """组装 handler 节点的 system prompt：基础人设 + 本环节话术要求（**追加非替代**）。
+
+    节点 prompt 若完全替代人设，LLM 只见孤立的指令、无身份背景，
+    会自行脑补身份（实测翻车：被当成 AI 服务商推销）。
+    追加语义下人设打底 + 节点话术约束，且前缀按节点字节级稳定（缓存友好）。
+    """
+    if not extra.strip():
+        return base
+    rendered = render_opening(extra, customer)  # 客户变量注入，不附时间行
+    return f"{base}\n\n## 本环节话术要求（必须遵守）\n{rendered}"

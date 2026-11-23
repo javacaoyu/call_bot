@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_HISTORY_TOKENS = 2000
 DEFAULT_SYSTEM_PROMPT = "你是一名专业的外呼机器人客服，回答简洁、礼貌、口语化。"
+
+# 打断轮且已说 0 句时的 assistant 占位：保持历史形态（user→assistant→user），
+# 否则模型看到连续多条 user 消息无人回复，会逐个补答历史问题
+INTERRUPTED_PLACEHOLDER = "（上一句回复被打断）"
 _COMPLIANCE_RULES = [
     "不做虚假承诺，不夸大产品效果",
     "不索要银行卡密码等敏感信息",

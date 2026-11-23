@@ -8,8 +8,10 @@ import {
   updatePersona,
   type Persona,
 } from "../api/personas";
+import { fetchScenes, type Scene } from "../api/scenes";
 
 const personas = ref<Persona[]>([]);
+const scenes = ref<Scene[]>([]);
 const loading = ref(true);
 const error = ref("");
 const saved = ref("");
@@ -17,7 +19,13 @@ const saved = ref("");
 /** 编辑表单（showEditor 控制显隐；editing=null 表示新建）。 */
 const showEditor = ref(false);
 const editing = ref<Persona | null>(null);
-const form = reactive({ name: "", description: "", system_prompt: "", opening: "" });
+const form = reactive({
+  name: "",
+  description: "",
+  system_prompt: "",
+  opening: "",
+  scene_id: "",
+});
 
 function openEditor(p: Persona | null): void {
   editing.value = p;
@@ -25,6 +33,7 @@ function openEditor(p: Persona | null): void {
   form.description = p?.description ?? "";
   form.system_prompt = p?.system_prompt ?? "";
   form.opening = p?.opening ?? "";
+  form.scene_id = p?.scene_id ?? scenes.value[0]?.id ?? "";
   showEditor.value = true;
 }
 
@@ -37,7 +46,10 @@ async function load(): Promise<void> {
   loading.value = true;
   error.value = "";
   try {
-    personas.value = await fetchPersonas();
+    [personas.value, scenes.value] = await Promise.all([
+      fetchPersonas(),
+      fetchScenes().catch(() => []),
+    ]);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -116,14 +128,25 @@ onMounted(load);
         {{ editing ? `编辑 · ${editing.name}` : "新建人设" }}
       </h3>
       <div class="flex flex-col gap-3">
-        <label class="flex flex-col gap-1 text-xs text-text-dim">
-          人设名
-          <input
-            v-model="form.name"
-            placeholder="如：理财客服小安"
-            class="rounded-md border border-line bg-bg px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-blue"
-          />
-        </label>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="flex flex-col gap-1 text-xs text-text-dim">
+            所属场景（从场景库选择）
+            <select
+              v-model="form.scene_id"
+              class="rounded-md border border-line bg-bg px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-blue"
+            >
+              <option v-for="s in scenes" :key="s.id" :value="s.id">{{ s.name }}</option>
+            </select>
+          </label>
+          <label class="flex flex-col gap-1 text-xs text-text-dim">
+            人设名
+            <input
+              v-model="form.name"
+              placeholder="如：理财客服小安"
+              class="rounded-md border border-line bg-bg px-2.5 py-1.5 text-[13px] text-text outline-none focus:border-blue"
+            />
+          </label>
+        </div>
         <label class="flex flex-col gap-1 text-xs text-text-dim">
           场景说明
           <input
@@ -188,6 +211,11 @@ onMounted(load);
             {{ p.is_active ? "● 使用中" : "未激活" }}
           </span>
           <h4 class="text-sm font-semibold">{{ p.name }}</h4>
+          <span
+            v-if="p.scene_name"
+            class="rounded border border-line px-1.5 py-0.5 text-[10px] text-text-dim"
+            >{{ p.scene_name }}</span
+          >
           <span class="text-[11px] text-text-faint">{{ p.description }}</span>
           <div class="ml-auto flex gap-2">
             <button
