@@ -76,3 +76,11 @@ export LD_LIBRARY_PATH=$(find .venv/lib/python3.12/site-packages/nvidia -name li
 - 提交信息遵循 Conventional Commits。
 - 不直接提交到 main（新功能先开分支，遵循用户级 Git 规范）。
 - 新增文件类型需判断是否加入 `.gitignore`；录音、模型权重、`.env` 不入库。
+
+## 前端设计约定（WBS 5.1 起）
+
+- 主题：暗/亮双主题 CSS 变量（`[data-theme]`），信号色板 teal（本地/当前节点/打断）+ blue（云端）+ green（在线）；颜色经 Tailwind v4 `@theme inline` 桥接为 utility（bg-panel/text-dim 等），禁止硬编码 hex。
+- 字体：中文阿里巴巴普惠体、英文与数据读数 JetBrains Mono；字体文件不入库（28MB），位于 `~/alibaba_font/`，初始化时复制到 `frontend/public/fonts/`（Regular/Medium/Bold 各一份）。
+- 设计稿：`opendesign/mockups/callbot-console/`（静态预览，风格基准）。
+- 布局：左侧选项卡导航（App.vue sidebar：运营/配置/治理分组，未上线模块灰显「待上线」）。
+- 样式栈：**Tailwind CSS v4**（@tailwindcss/vite 插件），组件用 utility class，自定义动画（lamp-pulse/wave）放 style.css。

@@ -52,3 +52,7 @@ provider_config.json
 # 官方文档 PDF（参考用，不入库）
 docs/*.pdf
 *.Zone.Identifier
+
+# 字体文件（阿里巴巴普惠体/JetBrains Mono，从 ~/alibaba_font 复制，不入库）
+frontend/public/fonts/
+opendesign/**/fonts/

@@ -1,113 +1,157 @@
-body {
-  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui,
-    -apple-system, sans-serif;
-  margin: 0;
-  background: #f5f6f8;
-  color: #1f2329;
-}
+/* callbot 管理台全局样式：Tailwind v4 + 暗/亮双主题 CSS 变量桥接。 */
 
-/* 管理台外壳：深色顶栏 + 内容区（WBS 4.4） */
-.shell {
-  min-height: 100vh;
-}
+@import "tailwindcss";
 
-.topbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 24px;
-  background: #161b22;
-  border-bottom: 1px solid #2a333d;
+/* ---------- 字体（本地文件，阿里巴巴普惠体 + JetBrains Mono） ---------- */
+@font-face {
+  font-family: "Alibaba PuHuiTi";
+  src: url("/fonts/Alibaba-PuHuiTi-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
 }
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+@font-face {
+  font-family: "Alibaba PuHuiTi";
+  src: url("/fonts/Alibaba-PuHuiTi-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
 }
-
-.brand-lamp {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #e8a33d;
+@font-face {
+  font-family: "Alibaba PuHuiTi";
+  src: url("/fonts/Alibaba-PuHuiTi-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
 }
-
-.brand-name {
-  color: #e6ebf0;
-  font-size: 15px;
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-SemiBold.ttf") format("truetype");
   font-weight: 600;
+  font-style: normal;
+  font-display: swap;
 }
 
-.brand-sub {
-  color: #8b98a5;
-  font-size: 12px;
-  margin-left: 2px;
+/* ---------- 主题变量（运行时切换） ---------- */
+:root {
+  --bg: #10151b;
+  --panel: #161d25;
+  --panel-2: #1b2430;
+  --line: #232d38;
+  --teal: #2fbfa5;
+  --blue: #4d9de0;
+  --green: #3fb68b;
+  --red: #e5484d;
+  --text: #e6ebf0;
+  --text-dim: #8b98a5;
+  --text-faint: #56636f;
+  --user-bubble: #1d2a3a;
+  --topbar-bg: rgba(16, 21, 27, 0.92);
+}
+[data-theme="light"] {
+  --bg: #f2f5f8;
+  --panel: #ffffff;
+  --panel-2: #f6f9fb;
+  --line: #dfe6ec;
+  --teal: #14977f;
+  --blue: #2e7fbe;
+  --green: #1e8e6b;
+  --red: #d9444c;
+  --text: #1a2330;
+  --text-dim: #5c6b7a;
+  --text-faint: #93a1af;
+  --user-bubble: #eaf3fa;
+  --topbar-bg: rgba(242, 245, 248, 0.92);
 }
 
-.tabs {
-  display: flex;
-  gap: 4px;
+/* ---------- Tailwind theme 桥接（@theme inline 引用运行时变量） ---------- */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-line: var(--line);
+  --color-teal: var(--teal);
+  --color-blue: var(--blue);
+  --color-green: var(--green);
+  --color-red: var(--red);
+  --color-text: var(--text);
+  --color-text-dim: var(--text-dim);
+  --color-text-faint: var(--text-faint);
+  --color-user-bubble: var(--user-bubble);
+  --font-sans: "Alibaba PuHuiTi", "PingFang SC", "Microsoft YaHei",
+    "Noto Sans CJK SC", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
 
-.tabs button {
-  background: transparent;
-  color: #8b98a5;
-  border: none;
-  border-radius: 6px;
-  padding: 7px 14px;
-  font-size: 13px;
-  margin: 0;
+body {
+  @apply bg-bg text-text font-sans antialiased;
+  transition: background-color 0.25s, color 0.25s;
 }
 
-.tabs button.active {
-  background: #2a333d;
-  color: #e6ebf0;
+/* ---------- 脉冲灯（状态灯呼吸） ---------- */
+@keyframes lamp-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.animate-lamp {
+  animation: lamp-pulse 2.4s ease-in-out infinite;
 }
 
-.tabs button:focus-visible {
-  outline: 2px solid #4d9de0;
+/* ---------- 波形柱呼吸 ---------- */
+@keyframes wave-breathe {
+  0%,
+  100% {
+    height: 6px;
+  }
+  50% {
+    height: 26px;
+  }
 }
 
+/* ---------- 遗留测试页兼容样式（MicCapture/AudioPlayer 等） ---------- */
 .app {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 24px;
+  @apply max-w-[640px] mx-auto p-6;
 }
 
 .hint {
-  color: #6b7280;
-  font-size: 14px;
+  @apply text-text-dim text-sm;
 }
 
 .card {
-  background: #fff;
-  border-radius: 8px;
-  padding: 16px;
-  margin-top: 16px;
+  @apply bg-panel border border-line rounded-lg p-4 mt-4;
 }
 
-button {
-  padding: 8px 16px;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb;
-  color: #fff;
-  cursor: pointer;
-  margin-right: 8px;
+button.base-btn {
+  @apply px-4 py-2 border-none rounded-md bg-blue text-white cursor-pointer mr-2;
 }
 
-button:disabled {
-  background: #9ca3af;
-  cursor: not-allowed;
+button.base-btn:disabled {
+  @apply bg-text-faint cursor-not-allowed;
 }
 
 .status {
-  color: #6b7280;
-  font-size: 14px;
+  @apply text-text-dim text-sm;
 }
 
 .error {
-  color: #dc2626;
-  font-size: 14px;
+  @apply text-red text-sm;
 }

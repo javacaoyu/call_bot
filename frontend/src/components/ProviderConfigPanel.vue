@@ -6,7 +6,7 @@ import {
   type ProviderConfig,
 } from "../api/providerConfig";
 
-/** 线路 kind 选项：side 决定状态灯色（local=琥珀 / cloud=蓝）。 */
+/** 线路 kind 选项：side 决定状态灯色（local=teal / cloud=blue）。 */
 const ASR_KINDS = [
   { value: "funasr", label: "本地 FunASR", side: "local" },
   { value: "volc", label: "火山", side: "cloud" },
@@ -78,17 +78,17 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="panel">
-    <div class="panel-head">
+  <div class="mx-auto my-6 max-w-[720px] rounded-xl border border-line bg-panel p-7 text-text transition-colors">
+    <div class="mb-5 flex items-start justify-between gap-4">
       <div>
-        <h2>线路配置</h2>
-        <p class="panel-sub">
+        <h2 class="text-xl font-semibold">线路配置</h2>
+        <p class="mt-1.5 max-w-[46ch] text-[13px] leading-relaxed text-text-dim">
           语音对话引擎的三条走线：识别 → 理解 → 合成。换一条线，下一路会话即生效。
         </p>
       </div>
       <button
         type="button"
-        class="save-btn"
+        class="shrink-0 rounded-md bg-text px-4.5 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-85 disabled:cursor-wait disabled:bg-text-faint disabled:text-bg"
         :disabled="saving || loading"
         @click="save"
       >
@@ -96,328 +96,182 @@ onMounted(load);
       </button>
     </div>
 
-    <p v-if="loading" class="panel-note">读取当前配置…</p>
-    <p v-if="error" class="panel-error">{{ error }}</p>
-    <p v-if="saved" class="panel-saved" role="status">已保存，下一路会话生效</p>
+    <p v-if="loading" class="text-[13px] text-text-dim">读取当前配置…</p>
+    <p v-if="error" class="text-[13px] text-red">{{ error }}</p>
+    <p v-if="saved" class="text-[13px] text-teal" role="status">已保存，下一路会话生效</p>
 
     <template v-if="!loading">
       <!-- ASR 线路 -->
-      <section class="line-card">
+      <section class="mt-4 flex overflow-hidden rounded-lg border border-line bg-panel-2">
         <span
-          class="line-strip"
-          :class="sideOf(cfg.asr_kind, ASR_KINDS)"
+          class="w-1 shrink-0 transition-colors duration-300"
+          :class="sideOf(cfg.asr_kind, ASR_KINDS) === 'local' ? 'bg-teal' : 'bg-blue'"
           aria-hidden="true"
         ></span>
-        <div class="line-body">
-          <div class="line-head">
-            <h3>语音识别 <span class="line-role">ASR</span></h3>
-            <span class="lamp" :class="sideOf(cfg.asr_kind, ASR_KINDS)">
+        <div class="flex-1 px-5 py-4">
+          <div class="mb-3 flex items-center justify-between">
+            <h3 class="text-[15px] font-semibold">
+              语音识别 <span class="ml-1.5 font-mono text-xs font-medium text-text-dim">ASR</span>
+            </h3>
+            <span
+              class="rounded-full border px-2.5 py-0.5 text-xs transition-colors"
+              :class="
+                sideOf(cfg.asr_kind, ASR_KINDS) === 'local'
+                  ? 'border-teal/45 text-teal'
+                  : 'border-blue/45 text-blue'
+              "
+            >
               {{ sideOf(cfg.asr_kind, ASR_KINDS) === "local" ? "本地" : "云端" }}
             </span>
           </div>
-          <div class="segmented" role="radiogroup" aria-label="语音识别走线">
+          <div class="mb-3 inline-flex overflow-hidden rounded-md border border-line" role="radiogroup" aria-label="语音识别走线">
             <button
               v-for="k in ASR_KINDS"
               :key="k.value"
               type="button"
-              :class="{ on: cfg.asr_kind === k.value }"
+              class="px-3.5 py-1.5 text-[13px] text-text-dim transition-colors"
+              :class="
+                cfg.asr_kind === k.value
+                  ? 'bg-line text-text'
+                  : 'hover:text-text'
+              "
               @click="cfg.asr_kind = k.value"
             >
               {{ k.label }}
             </button>
           </div>
-          <div v-if="cfg.asr_kind === 'volc'" class="fields">
-            <label>api_key<input v-model="cfg.asr_api_key" type="password" placeholder="X-Api-Key" /></label>
-            <label>资源 ID<input v-model="cfg.asr_resource_id" placeholder="volc.seedasr.sauc.duration" /></label>
+          <div v-if="cfg.asr_kind === 'volc'" class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5 gap-x-3.5">
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              api_key
+              <input v-model="cfg.asr_api_key" type="password" placeholder="X-Api-Key" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              资源 ID
+              <input v-model="cfg.asr_resource_id" placeholder="volc.seedasr.sauc.duration" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
           </div>
-          <div v-else-if="cfg.asr_kind === 'qwen'" class="fields">
-            <label>api_key<input v-model="cfg.asr_api_key" type="password" placeholder="sk-...（DashScope API Key）" /></label>
+          <div v-else-if="cfg.asr_kind === 'qwen'" class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5">
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              api_key
+              <input v-model="cfg.asr_api_key" type="password" placeholder="sk-...（DashScope API Key）" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
           </div>
-          <p v-else class="line-note">本地模型，无需密钥。</p>
+          <p v-else class="text-[13px] text-text-dim">本地模型，无需密钥。</p>
         </div>
       </section>
 
       <!-- LLM 线路 -->
-      <section class="line-card">
-        <span class="line-strip cloud" aria-hidden="true"></span>
-        <div class="line-body">
-          <div class="line-head">
-            <h3>大模型 <span class="line-role">LLM</span></h3>
-            <span class="lamp cloud">云端</span>
+      <section class="mt-4 flex overflow-hidden rounded-lg border border-line bg-panel-2">
+        <span class="w-1 shrink-0 bg-blue" aria-hidden="true"></span>
+        <div class="flex-1 px-5 py-4">
+          <div class="mb-3 flex items-center justify-between">
+            <h3 class="text-[15px] font-semibold">
+              大模型 <span class="ml-1.5 font-mono text-xs font-medium text-text-dim">LLM</span>
+            </h3>
+            <span class="rounded-full border border-blue/45 px-2.5 py-0.5 text-xs text-blue">云端</span>
           </div>
-          <p class="line-note llm-note">
+          <p class="mb-3 text-[13px] text-text-dim">
             OpenAI 兼容接口，换端点即换模型：DeepSeek、vLLM、Ollama 都是同一条线。
           </p>
-          <div class="fields">
-            <label>端点<input v-model="cfg.llm_base_url" placeholder="https://api.deepseek.com" /></label>
-            <label>密钥<input v-model="cfg.llm_api_key" type="password" placeholder="API Key" /></label>
-            <label>模型名<input v-model="cfg.llm_model" placeholder="deepseek-chat" /></label>
+          <div class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5 gap-x-3.5">
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              端点
+              <input v-model="cfg.llm_base_url" placeholder="https://api.deepseek.com" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              密钥
+              <input v-model="cfg.llm_api_key" type="password" placeholder="API Key" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              模型名
+              <input v-model="cfg.llm_model" placeholder="deepseek-chat" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
           </div>
         </div>
       </section>
 
       <!-- TTS 线路 -->
-      <section class="line-card">
+      <section class="mt-4 flex overflow-hidden rounded-lg border border-line bg-panel-2">
         <span
-          class="line-strip"
-          :class="sideOf(cfg.tts_kind, TTS_KINDS)"
+          class="w-1 shrink-0 transition-colors duration-300"
+          :class="sideOf(cfg.tts_kind, TTS_KINDS) === 'local' ? 'bg-teal' : 'bg-blue'"
           aria-hidden="true"
         ></span>
-        <div class="line-body">
-          <div class="line-head">
-            <h3>语音合成 <span class="line-role">TTS</span></h3>
-            <span class="lamp" :class="sideOf(cfg.tts_kind, TTS_KINDS)">
+        <div class="flex-1 px-5 py-4">
+          <div class="mb-3 flex items-center justify-between">
+            <h3 class="text-[15px] font-semibold">
+              语音合成 <span class="ml-1.5 font-mono text-xs font-medium text-text-dim">TTS</span>
+            </h3>
+            <span
+              class="rounded-full border px-2.5 py-0.5 text-xs transition-colors"
+              :class="
+                sideOf(cfg.tts_kind, TTS_KINDS) === 'local'
+                  ? 'border-teal/45 text-teal'
+                  : 'border-blue/45 text-blue'
+              "
+            >
               {{ sideOf(cfg.tts_kind, TTS_KINDS) === "local" ? "本地" : "云端" }}
             </span>
           </div>
-          <div class="segmented" role="radiogroup" aria-label="语音合成走线">
+          <div class="mb-3 inline-flex overflow-hidden rounded-md border border-line" role="radiogroup" aria-label="语音合成走线">
             <button
               v-for="k in TTS_KINDS"
               :key="k.value"
               type="button"
-              :class="{ on: cfg.tts_kind === k.value }"
+              class="px-3.5 py-1.5 text-[13px] text-text-dim transition-colors"
+              :class="
+                cfg.tts_kind === k.value
+                  ? 'bg-line text-text'
+                  : 'hover:text-text'
+              "
               @click="cfg.tts_kind = k.value"
             >
               {{ k.label }}
             </button>
           </div>
-          <div v-if="cfg.tts_kind === 'volc'" class="fields">
-            <label>音色<input v-model="cfg.tts_volc_speaker" placeholder="zh_female_vv_uranus_bigtts" /></label>
-            <p class="line-note" style="grid-column: 1 / -1">
+          <div v-if="cfg.tts_kind === 'volc'" class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5">
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              音色
+              <input v-model="cfg.tts_volc_speaker" placeholder="zh_female_vv_uranus_bigtts" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
+            <p class="col-span-full text-[13px] text-text-dim">
               api_key 复用语音识别线路的密钥（火山同一账号 Key 通用）。
             </p>
           </div>
-          <div v-else-if="cfg.tts_kind === 'qwen'" class="fields">
-            <label>音色<input v-model="cfg.tts_qwen_voice" placeholder="longanhuan_v3.1" /></label>
-            <p class="line-note" style="grid-column: 1 / -1">
+          <div v-else-if="cfg.tts_kind === 'qwen'" class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5">
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              音色
+              <input v-model="cfg.tts_qwen_voice" placeholder="longanhuan_v3.1" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
+            <p class="col-span-full text-[13px] text-text-dim">
               api_key 复用语音识别线路的密钥（千问同一账号 Key 通用）。
             </p>
           </div>
-          <div v-else-if="cfg.tts_kind === 'aliyun'" class="fields">
-            <label>appkey<input v-model="cfg.tts_appkey" placeholder="阿里云 NLS 项目 AppKey" /></label>
-            <label>token<input v-model="cfg.tts_token" type="password" placeholder="临时 token（或留空用 AK/SK）" /></label>
-            <label>AccessKey ID<input v-model="cfg.tts_access_key_id" placeholder="token 留空时使用" /></label>
-            <label>AccessKey Secret<input v-model="cfg.tts_access_key_secret" type="password" placeholder="token 留空时使用" /></label>
-            <label>音色<input v-model="cfg.tts_voice" placeholder="longxiaochun" /></label>
+          <div v-else-if="cfg.tts_kind === 'aliyun'" class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5 gap-x-3.5">
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              appkey
+              <input v-model="cfg.tts_appkey" placeholder="阿里云 NLS 项目 AppKey" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              token
+              <input v-model="cfg.tts_token" type="password" placeholder="临时 token（或留空用 AK/SK）" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              AccessKey ID
+              <input v-model="cfg.tts_access_key_id" placeholder="token 留空时使用" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              AccessKey Secret
+              <input v-model="cfg.tts_access_key_secret" type="password" placeholder="token 留空时使用" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              音色
+              <input v-model="cfg.tts_voice" placeholder="longxiaochun" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
           </div>
-          <p v-else class="line-note">本地模型，无需密钥。</p>
+          <p v-else class="text-[13px] text-text-dim">本地模型，无需密钥。</p>
         </div>
       </section>
     </template>
   </div>
 </template>
-
-<style scoped>
-.panel {
-  max-width: 720px;
-  margin: 24px auto;
-  padding: 28px;
-  background: #161b22;
-  border: 1px solid #2a333d;
-  border-radius: 10px;
-  color: #e6ebf0;
-}
-
-.panel-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 20px;
-}
-
-.panel-head h2 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-}
-
-.panel-sub {
-  margin: 6px 0 0;
-  color: #8b98a5;
-  font-size: 13px;
-  line-height: 1.5;
-  max-width: 46ch;
-}
-
-.save-btn {
-  flex-shrink: 0;
-  background: #e6ebf0;
-  color: #161b22;
-  font-weight: 600;
-  padding: 9px 18px;
-  border-radius: 6px;
-}
-
-.save-btn:hover:not(:disabled) {
-  background: #ffffff;
-}
-
-.save-btn:disabled {
-  background: #3a4550;
-  color: #8b98a5;
-  cursor: wait;
-}
-
-.panel-note {
-  color: #8b98a5;
-  font-size: 13px;
-}
-
-.panel-error {
-  color: #e5484d;
-  font-size: 13px;
-}
-
-.panel-saved {
-  color: #e8a33d;
-  font-size: 13px;
-}
-
-.line-card {
-  display: flex;
-  background: #1f262e;
-  border: 1px solid #2a333d;
-  border-radius: 8px;
-  margin-top: 16px;
-  overflow: hidden;
-}
-
-.line-strip {
-  flex-shrink: 0;
-  width: 4px;
-  transition: background-color 0.3s ease;
-}
-
-.line-strip.local {
-  background: #e8a33d;
-}
-
-.line-strip.cloud {
-  background: #4d9de0;
-}
-
-.line-body {
-  flex: 1;
-  padding: 16px 20px 18px;
-}
-
-.line-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.line-head h3 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.line-role {
-  color: #8b98a5;
-  font-size: 12px;
-  font-weight: 500;
-  margin-left: 6px;
-  font-variant-numeric: tabular-nums;
-}
-
-.lamp {
-  font-size: 12px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  transition: color 0.3s ease, border-color 0.3s ease;
-}
-
-.lamp.local {
-  color: #e8a33d;
-  border-color: rgba(232, 163, 61, 0.45);
-}
-
-.lamp.cloud {
-  color: #4d9de0;
-  border-color: rgba(77, 157, 224, 0.45);
-}
-
-.segmented {
-  display: inline-flex;
-  border: 1px solid #2a333d;
-  border-radius: 6px;
-  overflow: hidden;
-  margin-bottom: 12px;
-}
-
-.segmented button {
-  background: transparent;
-  color: #8b98a5;
-  border: none;
-  border-radius: 0;
-  padding: 7px 14px;
-  font-size: 13px;
-  margin: 0;
-}
-
-.segmented button + button {
-  border-left: 1px solid #2a333d;
-}
-
-.segmented button.on {
-  background: #2a333d;
-  color: #e6ebf0;
-}
-
-.fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 10px 14px;
-}
-
-.fields label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-  color: #8b98a5;
-}
-
-.fields input {
-  background: #161b22;
-  border: 1px solid #2a333d;
-  border-radius: 5px;
-  color: #e6ebf0;
-  padding: 7px 10px;
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-}
-
-.fields input:focus {
-  outline: 2px solid #4d9de0;
-  outline-offset: 0;
-  border-color: #4d9de0;
-}
-
-.fields input::placeholder {
-  color: #4b5865;
-}
-
-.line-note {
-  margin: 0;
-  color: #8b98a5;
-  font-size: 13px;
-}
-
-.llm-note {
-  margin-bottom: 12px;
-}
-
-@media (max-width: 640px) {
-  .panel {
-    padding: 18px;
-  }
-  .panel-head {
-    flex-direction: column;
-  }
-}
-</style>
