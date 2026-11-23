@@ -64,14 +64,16 @@ class QwenStreamingASR(CloudASRBase):
         self._api_key = api_key
         self._model = model
         self._task_id = ""
-        # 句级修订归一化：已定稿句列表 (sentence_id, text) + 当前句预览
-        self._confirmed: list[tuple[int, str]] = []
+        # 任务串行化：服务端要求上一任务 task-finished 后才能开新任务
+        # （finish 后立即 run-task 会被拒：任务失败 {} + 会话重建，实测）
+        self._task_done = True
+        # 句级修订归一化：已定稿句 id 集合（去重）+ 当前句预览。
+        # 快照语义 = 仅当前句（修订式）——历史定稿句不进快照，
+        # 否则新一轮转写会显示「上轮句+当前句」前缀（实测 bug）。
+        self._finalized_ids: set[int] = set()
         self._current_id: int | None = None
         self._current_text = ""
 
-    def _snapshot(self) -> str:
-        """页面快照：已定稿句 + 当前句预览。"""
-        return "".join(t for _, t in self._confirmed) + self._current_text
 
     # -- 协议钩子 --
     def _build_url(self) -> str:
@@ -82,6 +84,7 @@ class QwenStreamingASR(CloudASRBase):
 
     def _start_frame(self) -> str:
         self._task_id = uuid.uuid4().hex[:32]
+        self._task_done = False
         return build_qwen_asr_event("run-task", self._task_id, self._model)
 
     def _encode_audio(self, data: bytes) -> bytes | None:
@@ -96,16 +99,45 @@ class QwenStreamingASR(CloudASRBase):
             return None
         return data
 
-    def _final_frames(self) -> list[str]:
-        """finish-task：触发服务端收尾并推句尾最终结果。"""
+    def _final_frames(self) -> list[str | bytes]:
+        """判停静音 + finish-task：触发服务端收尾并推句尾最终结果。
+
+        先补发 1.2s 静音帧触发服务端 VAD 判停（max_sentence_silence），
+        最终句随之推来（settle 窗口内可达）；finish-task 收尾兜底。
+        若不补静音，finish 后服务端处理延迟 2-3s，最终句错过收尾窗口
+        （实测：无回复）。
+
+        同时重置句状态（新一轮基线）。
+        """
         logger.info("千问 finish-task: %s", self._task_id)
-        return [build_qwen_asr_event("finish-task", self._task_id, self._model)]
+        self._finalized_ids.clear()
+        self._current_id = None
+        self._current_text = ""
+        silence = b"\x00" * (16000 * 2 * 600 // 1000)  # 600ms @16k PCM16
+        return [
+            silence,
+            silence,
+            build_qwen_asr_event("finish-task", self._task_id, self._model),
+        ]
+
+    def _final_frame_interval_s(self) -> float:
+        """静音帧后等判停窗口再发 finish-task（否则判停不生效）。"""
+        return 0.8
 
     def _resume_frames(self) -> list[str]:
         """新任务：finish 后继续说话需重新 run-task（同连接复用）。"""
         self._task_id = uuid.uuid4().hex[:32]
+        self._task_done = False
         logger.info("千问 run-task（新任务）: %s", self._task_id)
         return [build_qwen_asr_event("run-task", self._task_id, self._model)]
+
+    def _resume_ready(self) -> bool:
+        """上一任务收尾（task-finished/failed）后才可重开任务。
+
+        非阻塞：任务事件由同一线程 recv 循环解析（task-finished 置
+        _task_done），未就绪时 sender 跳过本轮发送继续 recv。
+        """
+        return self._task_done
 
     # -- 结果解析（句级修订 → 最终句增量 + 快照） --
     def _parse_message(self, raw: bytes | str) -> ASRResult | None:
@@ -120,8 +152,11 @@ class QwenStreamingASR(CloudASRBase):
         if event == "task-failed":
             status = (msg.get("payload") or {}).get("output") or {}
             logger.error("千问 ASR 任务失败: %s", json.dumps(status, ensure_ascii=False)[:200])
+            self._task_done = True  # 失败也视为收尾完成，允许下一任务
             return None
         if event in ("task-started", "task-finished"):
+            if event == "task-finished":
+                self._task_done = True  # 允许下一任务
             logger.info("千问 %s: %s", event, header.get("task_id"))
             return None
         if event != "result-generated":
@@ -133,20 +168,18 @@ class QwenStreamingASR(CloudASRBase):
         sid = sentence.get("sentence_id")
         text = sentence["text"]
         if sentence.get("sentence_end"):
-            # 最终句：定稿。同句修正（替换）或新句追加；emit 句文本增量
-            if sid is not None and self._confirmed and self._confirmed[-1][0] == sid:
-                if self._confirmed[-1][1] != text:
-                    self._confirmed[-1] = (sid, text)
-                    return ASRResult(text="", is_final=True, snapshot=self._snapshot())
-                return None  # 完全重复
-            self._confirmed.append((sid if sid is not None else -1, text))
+            # 最终句定稿：同句重复跳过；新句 emit 句文本（增量进 utterance）
+            if sid is not None:
+                if sid in self._finalized_ids:
+                    return None
+                self._finalized_ids.add(sid)
             self._current_id = None
             self._current_text = ""
-            return ASRResult(text=text, is_final=True, snapshot=self._snapshot())
-        # 中间结果：只更新当前句预览（修订语义），快照供页面替换显示
+            return ASRResult(text=text, is_final=True, snapshot=text)
+        # 中间结果：快照仅当前句（修订式替换显示），text 空增量
         self._current_id = sid
         self._current_text = text
-        return ASRResult(text="", is_final=False, snapshot=self._snapshot())
+        return ASRResult(text="", is_final=False, snapshot=text)
 
     def reset(self) -> None:
         """软重置：任务状态由 _resume_frames 重开；句级基准保留。"""

@@ -74,9 +74,17 @@ class CloudASRBase:
     def _final_frames(self) -> list[str | bytes]:
         """is_final 时额外发送的帧（默认空）。
 
-        火山：判停静音流（bytes）；千问：finish-task 指令（str，文本帧）。
+        火山：判停静音流（bytes）；千问：静音判停 + finish-task（str）。
         """
         return []
+
+    def _final_frame_interval_s(self) -> float:
+        """_final_frames 相邻帧间的发送间隔（秒，默认 0 即连续发）。
+
+        千问：静音帧后需等判停窗口（~800ms）再发 finish-task，
+        否则静音与 finish 同时到达，判停不生效（最终句延迟 2-3s）。
+        """
+        return 0.0
 
     def _resume_frames(self) -> list[str | bytes]:
         """final 后恢复发送音频前额外发送的帧（默认空）。
@@ -84,6 +92,15 @@ class CloudASRBase:
         千问：新任务 run-task（str，文本帧）。
         """
         return []
+
+    def _resume_ready(self) -> bool:
+        """是否可恢复发送（need_resume 状态下）。
+
+        默认 True；千问需上一任务 task-finished——⚠️ 此钩子在 sender
+        线程调用，必须**非阻塞**：任务事件由同一线程的 recv 循环解析，
+        阻塞等待会导致死锁（task-finished 永远等不到，实测教训）。
+        """
+        return True
 
     def _parse_message(self, raw: bytes | str) -> ASRResult | None:
         raise NotImplementedError
@@ -140,10 +157,19 @@ class CloudASRBase:
             except Exception:  # noqa: BLE001 - 单次会话失败不影响后续轮次
                 logger.exception("云端 ASR 会话异常，等待下一轮重建")
 
+    def _send_final_frames(self, send_raw: Callable[[str | bytes], None]) -> None:
+        """按帧间隔发送 final 帧（静音判停窗口 → finish 指令）。"""
+        interval = self._final_frame_interval_s()
+        frames = self._final_frames()
+        for i, extra in enumerate(frames):
+            if i > 0 and interval > 0:
+                time.sleep(interval)
+            send_raw(extra)
+
     def _run_session_sync(self, ws: object, first: object) -> None:
         data, is_final = first  # type: ignore[misc]
 
-        def send_raw(raw: bytes) -> None:
+        def send_raw(raw: str | bytes) -> None:
             ws.send(raw)  # type: ignore[attr-defined]
 
         start = self._start_frame()
@@ -155,9 +181,15 @@ class CloudASRBase:
         ended = is_final
         end_sent_at: float | None = None
         need_resume = False
-        if ended:
-            for extra in self._final_frames():
-                send_raw(extra)
+        # 待发块缓存：(已编码内容 | None=纯收尾, is_final)。
+        # resume 未就绪时音频/收尾暂存于此，就绪后再发——保证
+        # finish-task 等指令发给新任务而非旧任务。
+        pending: tuple[str | bytes | None, bool] | None = None
+
+        def handle_final() -> None:
+            """收尾帧发送 + 长连接/短连接分支（闭包共享状态）。"""
+            nonlocal ended, end_sent_at, need_resume
+            self._send_final_frames(send_raw)
             if self._keep_connection:
                 ended = False  # 长连接模式：不结束会话，后续音频续传
                 need_resume = True
@@ -165,9 +197,13 @@ class CloudASRBase:
                 end = self._end_frame()
                 if end is not None:
                     send_raw(end)
+                ended = True
                 end_sent_at = time.monotonic()
+
+        if ended:
+            handle_final()
         while True:
-            # 1) 收服务端消息（短超时轮询）
+            # 1) 收服务端消息（短超时轮询；事件解析与发送共用线程）
             try:
                 raw = ws.recv(timeout=_RECV_POLL_S)  # type: ignore[attr-defined]
                 result = self._parse_message(raw)
@@ -181,35 +217,35 @@ class CloudASRBase:
                 if isinstance(exc, ConnectionClosed):
                     return
                 raise
-            # 2) 处理发送队列
+            # 2) 取新块：_CLOSE 始终优先消费（未就绪也不能阻塞关闭）
             if not ended:
-                try:
-                    item = self._send_q.get_nowait()
-                except queue.Empty:
-                    item = None
-                if item is _CLOSE:
-                    return  # 会话关闭：直接断连
-                if item is not None:
-                    chunk, final = item  # type: ignore[misc]
-                    encoded = self._encode_audio(chunk)
+                if pending is None:
+                    try:
+                        item = self._send_q.get_nowait()
+                    except queue.Empty:
+                        item = None
+                    if item is _CLOSE:
+                        return  # 会话关闭：直接断连
+                    if item is not None:
+                        chunk, final = item  # type: ignore[misc]
+                        encoded = self._encode_audio(chunk)
+                        if encoded is None and not final:
+                            continue  # 静音非收尾块：丢弃
+                        pending = (encoded, final)
+                # 3) 发送 pending：resume 未就绪时等待（继续 recv 等事件）
+                if pending is not None and (
+                    not need_resume or self._resume_ready()
+                ):
+                    encoded, final = pending
+                    pending = None
+                    if need_resume:
+                        for extra in self._resume_frames():
+                            send_raw(extra)
+                        need_resume = False
                     if encoded is not None:
-                        if need_resume:
-                            for extra in self._resume_frames():
-                                send_raw(extra)
-                            need_resume = False
                         send_raw(encoded)
                     if final:
-                        for extra in self._final_frames():
-                            send_raw(extra)
-                        if self._keep_connection:
-                            # 长连接模式：不结束会话，后续音频续传
-                            need_resume = True
-                            continue
-                        end = self._end_frame()
-                        if end is not None:
-                            send_raw(end)
-                        ended = True
-                        end_sent_at = time.monotonic()
+                        handle_final()
             elif (
                 end_sent_at is not None
                 and time.monotonic() - end_sent_at > _DRAIN_TIMEOUT_S

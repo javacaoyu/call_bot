@@ -84,7 +84,7 @@ def test_qwen_intermediate_emits_snapshot() -> None:
 
 
 def test_qwen_final_emits_sentence_delta() -> None:
-    """最终句：text = 句增量（进 utterance），snapshot = 已定稿累计。"""
+    """最终句：text = 句增量（进 utterance），snapshot = 该句文本。"""
     asr = QwenStreamingASR(api_key="k")
     asr._parse_message(_sentence_event("你好世界"))  # noqa: SLF001
     result = asr._parse_message(_sentence_event("你好世界。", sentence_end=True))  # noqa: SLF001
@@ -92,21 +92,18 @@ def test_qwen_final_emits_sentence_delta() -> None:
     assert result.text == "你好世界。"
     assert result.is_final is True
     assert result.snapshot == "你好世界。"
-    # 第二句
+    # 第二句：快照仅当前句（不含历史定稿）
     asr._parse_message(_sentence_event("再见", sentence_id=2))  # noqa: SLF001
     result = asr._parse_message(_sentence_event("再见。", sentence_id=2, sentence_end=True))  # noqa: SLF001
     assert result.text == "再见。"
-    assert result.snapshot == "你好世界。再见。"
+    assert result.snapshot == "再见。"
 
 
-def test_qwen_final_correction_replaces() -> None:
-    """同句最终结果修正：替换已定稿文本，不重复追加。"""
+def test_qwen_final_duplicate_skipped() -> None:
+    """同句最终结果重复：跳过（定稿句不再重发）。"""
     asr = QwenStreamingASR(api_key="k")
     asr._parse_message(_sentence_event("你好世界。", sentence_end=True))  # noqa: SLF001
-    result = asr._parse_message(_sentence_event("您好世界。", sentence_end=True))  # noqa: SLF001
-    assert result is not None
-    assert result.text == ""  # 修正不重复追加
-    assert result.snapshot == "您好世界。"
+    assert asr._parse_message(_sentence_event("你好世界。", sentence_end=True)) is None  # noqa: SLF001
 
 
 def test_qwen_heartbeat_and_failed_skipped() -> None:
@@ -116,6 +113,41 @@ def test_qwen_heartbeat_and_failed_skipped() -> None:
     failed = json.dumps({"header": {"event": "task-failed"}, "payload": {"output": {"code": 1}}})
     assert asr._parse_message(failed) is None  # noqa: SLF001
     assert asr._parse_message(b"binary") is None  # noqa: SLF001
+
+
+def test_qwen_finish_resets_snapshot_baseline() -> None:
+    """finish-task 后定稿 id 清空：settle 期重推最终句作为新句 emit（增量正确）。"""
+    asr = QwenStreamingASR(api_key="k")
+    asr._parse_message(_sentence_event("你们有什么产品？", sentence_end=True))  # noqa: SLF001
+    asr._final_frames()  # flush：finish-task + 重置  # noqa: SLF001
+    # settle 期服务端重推最终句（id 已被清空）→ 作为新句再次 emit
+    result = asr._parse_message(_sentence_event("你们有什么产品？", sentence_end=True))  # noqa: SLF001
+    assert result is not None
+    assert result.text == "你们有什么产品？"
+    # 新句中间结果快照仅当前句
+    preview = asr._parse_message(_sentence_event("还有什么", sentence_id=3))  # noqa: SLF001
+    assert preview is not None
+    assert preview.snapshot == "还有什么"
+
+
+def test_qwen_task_serialization_state() -> None:
+    """任务串行状态机：初始就绪 → run-task 未就绪 → finished/failed 后恢复。
+
+    回归：resume 必须非阻塞等待（旧实现 sender 线程 sleep 死锁——
+    task-finished 由同线程 recv 解析，永远等不到）。
+    """
+    asr = QwenStreamingASR(api_key="k")
+    assert asr._resume_ready() is True  # noqa: SLF001 - 初始就绪
+    asr._start_frame()  # 首任务：run-task  # noqa: SLF001
+    assert asr._resume_ready() is False  # noqa: SLF001 - 任务进行中不可重开
+    finished = json.dumps({"header": {"event": "task-finished", "task_id": "x"}})
+    asr._parse_message(finished)  # noqa: SLF001
+    assert asr._resume_ready() is True  # noqa: SLF001 - 收尾后恢复
+    asr._resume_frames()  # 新任务  # noqa: SLF001
+    assert asr._resume_ready() is False  # noqa: SLF001
+    failed = json.dumps({"header": {"event": "task-failed"}, "payload": {"output": {}}})
+    asr._parse_message(failed)  # noqa: SLF001
+    assert asr._resume_ready() is True  # noqa: SLF001 - 失败也视为收尾完成
 
 
 # ---------- 千问 TTS ----------

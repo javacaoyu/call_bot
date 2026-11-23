@@ -279,8 +279,11 @@ def _prepare_models(  # noqa: ANN001
                 asyncio.run_coroutine_threadsafe(interrupt_cb(), loop)
             elif active and result.text.strip():
                 logger.info("打断被去重/未触发: text=%s fired=%s", result.text, interrupt_fired)
-            # 半双工：机器人回复期间的新转写不参与下一轮
-            if not active:
+            # 半双工：机器人回复期间的新转写不参与下一轮。
+            # ⚠️ 空文本不 append——千问等句级 ASR 的中间结果 text 为空
+            # （快照语义），append 空串会让「utterance 非空」判断失效，
+            # 收尾提前 join 出空文本（实测：不回复）。
+            if not active and result.text:
                 utterance.append(result.text)
 
         try:
@@ -331,6 +334,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
     utterance: list[str] = []
     reply_in_progress = False
     reply_task: asyncio.Task[None] | None = None
+    finish_task: asyncio.Task[None] | None = None  # 收尾 task 单引用（串行化）
     pending_spoken: list[str] = []  # 打断上下文：本轮已完整说出的句子
     interrupted_this_turn = False  # 本轮回复是否被打断过（决定 spoken_prefix 注入）
     audio_seq = 0  # 已发送音频帧序号（每帧递增）
@@ -454,18 +458,41 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                 frame = AudioFrame(data=message["bytes"])
                 event = vad.process_frame(frame)
                 if event is VADEvent.SPEECH_START:
+                    logger.info(
+                        "VAD 起音: reply=%s playback=%s flushed=%s",
+                        reply_in_progress,
+                        playback_active(),
+                        flushed,
+                    )
                     flushed = False  # 新语音段到达，重置收尾门控
                     if reply_in_progress or playback_active():
                         asyncio.ensure_future(handle_interrupt(time.perf_counter()))
                 elif event is VADEvent.SPEECH_END:
                     engine = session.engine if session else None
                     if (
+                        engine is None
+                        or reply_in_progress
+                        or playback_active()
+                        or engine.state != EngineState.LISTENING
+                        or flushed
+                    ):
+                        logger.info(
+                            "VAD 端点被挡: engine=%s reply=%s playback=%s state=%s flushed=%s",
+                            engine is not None,
+                            reply_in_progress,
+                            playback_active(),
+                            engine.state if engine else None,
+                            flushed,
+                        )
+                    # 注意：不能要求 utterance 非空——千问等句级修订式 ASR 的
+                    # 中间结果 text 为空（快照语义），最终句要等 flush 才推；
+                    # 空转写 flush 后 finish_utterance 判空不回复，无害。
+                    if (
                         engine is not None
                         and not reply_in_progress
                         and not playback_active()
                         and engine.state == EngineState.LISTENING
                         and not flushed
-                        and utterance
                     ):
                         flushed = True
                         engine.flush_asr()
@@ -473,11 +500,22 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                         async def finish_utterance() -> None:
                             """收尾宽限：等云端 ASR 判停增量并入后再送回复。
 
-                            云端实时识别的尾字在判停（~800ms 静音）后才返回；
-                            宽限期内的增量继续 append 到 utterance，避免吞尾字。
+                            宽限期内增量继续 append；若宽限期结束 utterance 仍空
+                            （千问 finish-task 后服务端推最终句约 1-2s），继续
+                            轮询等待（最多 5s）。等待期若 VAD 又起音（flushed
+                            被重置 = 用户开始说下一句），本收尾作废交新轮——
+                            防止两个收尾 task 并发 join 混句。
                             """
                             nonlocal reply_task, interrupted_this_turn
+                            logger.info("收尾启动: settle=%dms", settings.utterance_settle_ms)
                             await asyncio.sleep(settings.utterance_settle_ms / 1000)
+                            deadline = time.monotonic() + 5.0
+                            while not utterance and time.monotonic() < deadline:
+                                if not flushed:  # noqa: B023 - 函数级变量（循环外定义），需运行时最新值
+                                    logger.info("收尾作废：检测到新语音，交新轮")
+                                    return
+                                await asyncio.sleep(0.2)
+                            logger.info("收尾 join: utterance_len=%d", len(utterance))
                             text = "".join(utterance).strip()
                             utterance.clear()
                             if text:
@@ -494,7 +532,10 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                                     run_reply(text, prefix)
                                 )
 
-                        asyncio.ensure_future(finish_utterance())
+                        # 串行化：新轮收尾接管前取消上一收尾 task
+                        if finish_task is not None and not finish_task.done():
+                            finish_task.cancel()
+                        finish_task = asyncio.ensure_future(finish_utterance())
                 if session is not None and session.engine is not None:
                     session.engine.feed_audio(frame)
                 continue
