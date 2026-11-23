@@ -15,6 +15,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import Any
 
 import av
@@ -227,6 +228,7 @@ def _prepare_models(  # noqa: ANN001
     vad: SileroVAD,
     settings: Settings,
     interrupt_cb: Callable[[], Awaitable[None]],
+    transcript_log: list[dict],
 ) -> asyncio.Task[None]:
     """异步准备模型：加载 ASR + VAD（线程内）并挂到会话引擎。
 
@@ -239,12 +241,25 @@ def _prepare_models(  # noqa: ANN001
         settings: 全局配置（ASR 工厂 kind 分发）。
         interrupt_cb: 打断触发（async）；回复期间转写出字即调用——ASR 驱动
             打断比 VAD 起音（250ms 观察窗）更快。
+        transcript_log: 会话转写记录缓冲（5.3 通话记录落库）。
     """
 
     async def run() -> None:
         loop = asyncio.get_running_loop()  # 主事件循环（云端 ASR 回调线程用）
         interrupt_fired = False  # 去重：每轮回复只打断一次
         prev_reply_active = False
+
+        def log_bubble(role: str, text: str, snapshot: bool) -> None:
+            """气泡流记录：bot/user 连续同角色合并；快照语义替换末条。"""
+            ts = round(time.monotonic(), 2)
+            if transcript_log and transcript_log[-1]["role"] == role:
+                if snapshot or role == "user":
+                    transcript_log[-1] = {"role": role, "text": text, "ts": ts}
+                else:
+                    transcript_log[-1]["text"] += text
+                    transcript_log[-1]["ts"] = ts
+            else:
+                transcript_log.append({"role": role, "text": text, "ts": ts})
 
         def send_transcript(result: ASRResult) -> None:
             nonlocal interrupt_fired, prev_reply_active
@@ -279,6 +294,10 @@ def _prepare_models(  # noqa: ANN001
                 asyncio.run_coroutine_threadsafe(interrupt_cb(), loop)
             elif active and result.text.strip():
                 logger.info("打断被去重/未触发: text=%s fired=%s", result.text, interrupt_fired)
+            # 通话记录（5.3）：页面文本进气泡流（快照替换/增量合并）
+            if result.snapshot is not None or result.text:
+                page_text = result.snapshot if result.snapshot is not None else result.text
+                log_bubble("user", page_text, snapshot=result.snapshot is not None)
             # 半双工：机器人回复期间的新转写不参与下一轮。
             # ⚠️ 空文本不 append——千问等句级 ASR 的中间结果 text 为空
             # （快照语义），append 空串会让「utterance 非空」判断失效，
@@ -339,6 +358,14 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
     interrupted_this_turn = False  # 本轮回复是否被打断过（决定 spoken_prefix 注入）
     audio_seq = 0  # 已发送音频帧序号（每帧递增）
     confirmed_audio_seq = 0  # 前端已确认播放到的帧序号（playback_done 回传）
+    # 通话记录（5.3）：会话转写气泡流 + 起始时刻 + 打断计数
+    transcript_log: list[dict] = []
+    call_started_at = time.monotonic()
+    from datetime import datetime
+
+    call_started_wall = datetime.now(UTC)  # 会话真实开始时刻（落库用）
+    interrupt_count = 0
+    recorded = False  # 会话已落库（空闲自动收尾后断开不重复写）
 
     def playback_active() -> bool:
         """前端是否仍在播报（已发送帧多于已确认帧）。
@@ -366,6 +393,54 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                 "data": base64.b64encode(frame.data).decode(),
             }
         )
+
+    async def flush_record() -> None:
+        """落库（幂等）：有 user 气泡才记录；空闲收尾与断开共用。"""
+        nonlocal recorded
+        if recorded:
+            return
+        recorded = True
+        if not transcript_log or not any(b["role"] == "user" for b in transcript_log):
+            return  # 过滤无效会话（客户未说过话）
+        from datetime import datetime
+
+        from callbot.data.models import CallRecord, save_call_record
+
+        now = datetime.now(UTC)
+        duration = max(1, int(time.monotonic() - call_started_at))
+        try:
+            save_call_record(
+                CallRecord(
+                    started_at=call_started_wall,
+                    ended_at=now,
+                    duration_s=duration,
+                    status="connected",
+                    interrupt_count=interrupt_count,
+                    transcript=transcript_log,
+                ),
+                settings,
+            )
+            logger.info(
+                "通话记录已保存: %d 条气泡, %d 次打断",
+                len(transcript_log),
+                interrupt_count,
+            )
+        except Exception:  # noqa: BLE001 - DB 不可用不阻断
+            logger.exception("通话记录保存失败")
+
+    async def schedule_idle_record() -> None:
+        """回复完成后 60s 空闲 → 自动落库（重启时旧会话早已记录）。"""
+        await asyncio.sleep(60)
+        await flush_record()
+
+    idle_record_task: asyncio.Task[None] | None = None
+
+    def arm_idle_record() -> None:
+        """（重新）启动空闲落库计时器。"""
+        nonlocal idle_record_task
+        if idle_record_task is not None and not idle_record_task.done():
+            idle_record_task.cancel()
+        idle_record_task = asyncio.ensure_future(schedule_idle_record())
 
     async def run_reply(text: str, spoken_prefix: str | None = None) -> None:
         """回复管线：编排层 → joiner → 引擎 FIFO → 并发推送音频帧。
@@ -395,6 +470,13 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
             async def tokens() -> AsyncIterator[str]:  # noqa: ANN202
                 async for token in orch.stream_reply(text, spoken_prefix):
                     await send_json({"type": "reply", "text": token})
+                    # 通话记录（5.3）：bot 气泡合并
+                    ts = round(time.monotonic(), 2)
+                    if transcript_log and transcript_log[-1]["role"] == "bot":
+                        transcript_log[-1]["text"] += token
+                        transcript_log[-1]["ts"] = ts
+                    else:
+                        transcript_log.append({"role": "bot", "text": token, "ts": ts})
                     yield token
 
             async def drain() -> None:
@@ -419,6 +501,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
             logger.exception("回复管线失败")
             await send_json({"type": "status", "detail": "回复失败，请重试"})
             reply_in_progress = False
+        arm_idle_record()  # 一轮回复结束：重新计时空闲落库（5.3）
 
     async def handle_interrupt(started_at: float) -> None:
         """打断动作链（3.3）：停音频 + 关 LLM 流 + 暂存已说句子。
@@ -427,7 +510,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
         cancel 回复 task（token 流 aclose → LLM 关流）→ 前端 stop_audio
         立即停播已调度的帧。started_at 为 VAD 起音判定的时刻（埋点计时）。
         """
-        nonlocal reply_in_progress, pending_spoken, interrupted_this_turn
+        nonlocal reply_in_progress, pending_spoken, interrupted_this_turn, interrupt_count
         engine = session.engine
         if engine is None:
             return
@@ -435,6 +518,10 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
         spoken = engine.interrupt()  # 清队列 + SPEAKING/THINKING → LISTENING
         pending_spoken.extend(spoken)
         interrupted_this_turn = True  # 下一轮回复注入打断占位（保持历史形态）
+        interrupt_count += 1  # 通话记录（5.3）
+        transcript_log.append(
+            {"role": "mark", "text": "客户打断", "ts": round(time.monotonic(), 2)}
+        )
         reply_in_progress = False
         if reply_task is not None:
             reply_task.cancel()  # 先停音频帧流（drain 随队列清空退出）
@@ -565,6 +652,7 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                     vad,
                     settings,
                     lambda: handle_interrupt(time.perf_counter()),
+                    transcript_log,
                 )
                 await pc.setRemoteDescription(
                     RTCSessionDescription(sdp=msg["sdp"], type="offer")
@@ -595,3 +683,5 @@ async def handle_signaling(websocket: WebSocket, manager: SessionManager) -> Non
                 session.engine.stop()  # flush ASR 并进入 CLOSED
             await session.peer.close()
             manager.remove(session.id)
+            # 通话记录（5.3）：会话结束落库（空闲收尾已记录则跳过）
+            await flush_record()

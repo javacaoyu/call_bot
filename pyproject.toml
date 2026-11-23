@@ -13,6 +13,7 @@ dependencies = [
     "openai>=1.50",
     "numpy>=2.0",
     "soundfile>=0.12",
+    "psycopg[binary]>=3.3.9",
 ]
 
 [project.optional-dependencies]

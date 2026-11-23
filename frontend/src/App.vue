@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import CallsPage from "./components/CallsPage.vue";
 import ProviderConfigPanel from "./components/ProviderConfigPanel.vue";
 import WebRtcSession from "./components/WebRtcSession.vue";
 
-type View = "chat" | "config";
+type View = "chat" | "config" | "records";
 
 interface NavItem {
   id: View | string;
@@ -18,7 +19,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     label: "运营",
     items: [
       { id: "chat", label: "对话工作台", badge: "LIVE", icon: "chat" },
-      { id: "records", label: "通话记录", soon: true, icon: "records" },
+      { id: "records", label: "通话记录", icon: "records" },
     ],
   },
   {
@@ -160,7 +161,8 @@ applyTheme(theme.value);
     <!-- ======== 内容区 ======== -->
     <main class="min-w-0 flex-1">
       <WebRtcSession v-if="view === 'chat'" />
-      <ProviderConfigPanel v-else />
+      <ProviderConfigPanel v-else-if="view === 'config'" />
+      <CallsPage v-else />
     </main>
   </div>
 </template>
