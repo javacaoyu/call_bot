@@ -33,11 +33,12 @@ class ToolIn(BaseModel):
 def _tool_dict(t: Tool) -> dict:
     return {
         "id": str(t.id),
-        "scene_id": str(t.scene_id),
+        "scene_id": str(t.scene_id) if t.scene_id is not None else None,
         "name": t.name,
         "description": t.description,
         "kind": t.kind,
         "config": t.config,
+        "builtin": t.kind == "builtin",
         "created_at": t.created_at.isoformat(),
     }
 
@@ -56,12 +57,19 @@ def _get_scene(session: Session, scene_id: str) -> Scene:
 
 @router.get("/tools")
 async def list_tools(scene_id: str) -> list[dict]:
-    """按场景列出工具（scene_id 必填——工具库按场景分类）。"""
+    """按场景列出工具：本场景工具 ∪ 内置基础工具（所有场景默认提供）。"""
+    from sqlalchemy import or_
+
     with Session(get_engine()) as session:
         _get_scene(session, scene_id)
         tools = session.scalars(
             select(Tool)
-            .where(Tool.scene_id == uuid.UUID(scene_id))
+            .where(
+                or_(
+                    Tool.scene_id == uuid.UUID(scene_id),
+                    Tool.kind == "builtin",
+                )
+            )
             .order_by(Tool.created_at)
         ).all()
         return [_tool_dict(t) for t in tools]
@@ -106,7 +114,7 @@ async def update_tool(tool_id: str, body: ToolIn) -> dict:
 
 @router.delete("/tools/{tool_id}")
 async def delete_tool(tool_id: str) -> dict:
-    """删除工具。"""
+    """删除工具（内置基础工具不可删除）。"""
     try:
         uid = uuid.UUID(tool_id)
     except ValueError:
@@ -115,6 +123,8 @@ async def delete_tool(tool_id: str) -> dict:
         tool = session.get(Tool, uid)
         if tool is None:
             raise HTTPException(status_code=404, detail="工具不存在")
+        if tool.kind == "builtin":
+            raise HTTPException(status_code=400, detail="内置基础工具不可删除")
         session.delete(tool)
         session.commit()
         return {"deleted": tool_id}

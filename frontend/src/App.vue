@@ -27,6 +27,8 @@ interface NavItem {
   badge?: string;
   soon?: boolean;
   icon: string;
+  /** 外部链接（新标签页打开；如知识库独立系统 /rag） */
+  href?: string;
 }
 
 const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
@@ -47,7 +49,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { id: "flow", label: "话术编排", icon: "flow" },
       { id: "tools", label: "工具库", icon: "flow" },
       { id: "templates", label: "模板库", icon: "tpl" },
-      { id: "kb", label: "知识库", soon: true, icon: "kb" },
+      { id: "kb", label: "知识库", icon: "kb", href: "/rag" },
     ],
   },
   {
@@ -105,7 +107,8 @@ applyTheme(theme.value);
           <a
             v-for="item in group.items"
             :key="item.id"
-            href="#"
+            :href="item.href ?? '#'"
+            :target="item.href ? '_blank' : undefined"
             class="group flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] transition-colors"
             :class="[
               view === item.id
@@ -114,7 +117,7 @@ applyTheme(theme.value);
                   ? 'cursor-not-allowed text-text-faint opacity-60'
                   : 'text-text-dim hover:bg-panel-2 hover:text-text',
             ]"
-            @click.prevent="!item.soon && navigate(item.id as View)"
+            @click.prevent="!item.soon && !item.href && navigate(item.id as View)"
           >
             <!-- 图标 -->
             <svg

@@ -58,8 +58,9 @@ def test_scene_delete_blocked_by_assets(api_client: TestClient) -> None:
     )
     resp = api_client.delete(f"/api/scenes/{s['id']}")
     assert resp.status_code == 400  # 场景下有工具，拒删
-    # 清理工具后可删
-    tool_id = api_client.get(f"/api/tools?scene_id={s['id']}").json()[0]["id"]
+    # 清理场景自有工具（跳过内置工具）后可删
+    tools = api_client.get(f"/api/tools?scene_id={s['id']}").json()
+    tool_id = next(t["id"] for t in tools if not t["builtin"])
     api_client.delete(f"/api/tools/{tool_id}")
     assert api_client.delete(f"/api/scenes/{s['id']}").status_code == 200
 
@@ -79,7 +80,10 @@ def test_tool_crud(api_client: TestClient) -> None:
         },
     ).json()
     assert t["scene_id"] == s1["id"]
-    assert api_client.get(f"/api/tools?scene_id={s2['id']}").json() == []  # 场景隔离
+    # 场景隔离（内置工具对所有场景可见，不计入场景自有工具）
+    tools_s2 = api_client.get(f"/api/tools?scene_id={s2['id']}").json()
+    own_tools = [x for x in tools_s2 if not x["builtin"]]
+    assert own_tools == []
     resp = api_client.put(
         f"/api/tools/{t['id']}",
         json={

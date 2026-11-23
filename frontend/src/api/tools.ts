@@ -17,11 +17,12 @@ export interface ToolConfig {
 
 export interface Tool {
   id: string;
-  scene_id: string;
+  scene_id: string | null;
   name: string;
   description: string;
-  kind: "http" | "plugin";
+  kind: "http" | "plugin" | "builtin";
   config: ToolConfig;
+  builtin: boolean;
   created_at: string;
 }
 

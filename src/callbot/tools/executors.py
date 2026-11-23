@@ -10,15 +10,17 @@ TypeError）：Params 类只作 JSON schema，run 的形参必须与 Params 字�
 from __future__ import annotations
 
 import logging
+import random
 import uuid
 from typing import Any
 
 import httpx
-from pydantic import Field, create_model
+from pydantic import BaseModel, Field, create_model
 from sqlalchemy.orm import Session
 
 from callbot.config import Settings
 from callbot.data.models import Tool, get_engine
+from callbot.providers.llm import DeepSeekStreamingLLM
 from callbot.tools.loader import get_plugin
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,81 @@ _HTTP_FIELD_TYPES = {
     "number": float,
     "boolean": bool,
 }
+
+# ---------- 内置基础工具（7.1）：所有场景默认提供、不可删除 ----------
+
+# 模拟检索兜底短答（LLM 不可用时随机返回，10 字以内）
+_MOCK_FALLBACK_ANSWERS = (
+    "好的，没问题。",
+    "可以的，稍等。",
+    "明白了，谢谢。",
+    "建议您再确认下。",
+    "这个稍后答复您。",
+)
+
+_KB_ANSWER_MAX_CHARS = 10
+
+
+class KBSearchParams(BaseModel):
+    """kb_search 参数 schema（AgentScope 以 **kwargs 调用）。"""
+
+    query: str = Field(description="要检索的问题或关键词")
+
+
+async def kb_search_run(query: str) -> str:
+    """知识库检索工具（7.1 模拟版）：任何问题让 DeepSeek 随机短答（10 字内）。
+
+    真实知识库为独立系统（我们不开发）——本工具为占位实现，后续经
+    HTTP 接口对接独立系统时仅替换本函数（工具签名/注册不变，对流程层透明）。
+    """
+    settings = Settings()
+    try:
+        llm = DeepSeekStreamingLLM(
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+            model=settings.llm_model,
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是知识库模拟检索工具。对任何问题都随机编一句简短回复，"
+                    "10 字以内，不要回答不知道，直接输出回复本身。"
+                ),
+            },
+            {"role": "user", "content": query},
+        ]
+        pieces: list[str] = []
+        async for token in llm.generate(messages, max_tokens=20):
+            pieces.append(token)
+        answer = "".join(pieces).strip().rstrip("。！？!?").strip()
+        answer = answer[:_KB_ANSWER_MAX_CHARS].strip()
+        if answer:
+            return answer
+    except Exception:  # noqa: BLE001 - LLM 不可用走随机兜底，不阻断通话
+        logger.exception("kb_search 模拟检索失败，走随机兜底")
+    return random.choice(_MOCK_FALLBACK_ANSWERS)[:_KB_ANSWER_MAX_CHARS]
+
+
+BUILTIN_TOOLS: dict[str, tuple[str, str, type, Any]] = {
+    # builtin 键 → (工具名, 描述, Params, run)
+    "kb_search": (
+        "kb_search",
+        "在知识库中检索资料：输入问题，返回相关回答（当前为模拟实现）",
+        KBSearchParams,
+        kb_search_run,
+    ),
+}
+
+
+def _build_builtin(tool: Tool) -> tuple[str, str, type, Any] | None:
+    """内置工具：从注册表取执行要素。"""
+    key = str((tool.config or {}).get("builtin", ""))
+    spec = BUILTIN_TOOLS.get(key)
+    if spec is None:
+        logger.warning("未知内置工具，跳过: %s", key)
+        return None
+    return spec
 
 
 async def build_toolkit(
@@ -54,7 +131,12 @@ async def build_toolkit(
             if tool is None:
                 logger.warning("工具不存在，跳过: %s", tool_id)
                 continue
-            spec = _build_http(tool) if tool.kind == "http" else _build_plugin(tool)
+            if tool.kind == "http":
+                spec = _build_http(tool)
+            elif tool.kind == "plugin":
+                spec = _build_plugin(tool)
+            else:
+                spec = _build_builtin(tool)
             if spec is None:
                 continue
             name, description, schema_cls, func = spec

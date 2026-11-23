@@ -108,10 +108,12 @@ class Scene(Base):
 
 
 class Tool(Base):
-    """工具（6.3）：场景工具库，handler 子智能体绑定使用。
+    """工具（6.3/7.1）：场景工具库，handler 子智能体绑定使用。
 
     kind: http（配置式：config 存 URL/方法/参数表/header，热生效）
         | plugin（代码插件：config 存插件名，启动加载）
+        | builtin（内置基础工具，如 kb_search 知识库检索——scene_id 为空、
+            所有场景默认提供、不可删除）
     """
 
     __tablename__ = "tools"
@@ -119,8 +121,8 @@ class Tool(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    scene_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("scenes.id", ondelete="CASCADE")
+    scene_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scenes.id", ondelete="CASCADE"), nullable=True
     )
     name: Mapped[str] = mapped_column(String(64))
     description: Mapped[str] = mapped_column(Text, default="")
@@ -241,6 +243,28 @@ def init_db(settings: Settings | None = None) -> None:
             )
             session.commit()
             logger.info("已种子默认外呼流程（v1 已发布）")
+        # 内置基础工具（7.1）：知识库检索（模拟实现）——所有场景默认提供、
+        # 不可删除；真实知识库为独立系统，后续经接口替换模拟实现
+        _KB_DESC = (
+            "在知识库中检索资料：输入问题，返回相关回答"
+            "（当前为模拟实现：随机短答；正式对接独立知识库系统后替换）"
+        )
+        builtin = session.scalars(select(Tool).where(Tool.kind == "builtin")).first()
+        if builtin is None:
+            session.add(
+                Tool(
+                    scene_id=None,
+                    name="kb_search",
+                    description=_KB_DESC,
+                    kind="builtin",
+                    config={"builtin": "kb_search"},
+                )
+            )
+            session.commit()
+            logger.info("已种子内置工具 kb_search（模拟）")
+        elif builtin.description != _KB_DESC:
+            builtin.description = _KB_DESC  # 幂等刷新描述（模拟语义更新）
+            session.commit()
 
 
 def save_call_record(

@@ -68,7 +68,7 @@ function openEditor(t: Tool | null): void {
   editing.value = t;
   form.name = t?.name ?? "";
   form.description = t?.description ?? "";
-  form.kind = t?.kind ?? "http";
+  form.kind = t?.kind === "plugin" ? "plugin" : "http"; // builtin 不可编辑（编辑器不开放）
   form.url = t?.config.url ?? "";
   form.method = t?.config.method ?? "GET";
   form.plugin = t?.config.plugin ?? "";
@@ -317,26 +317,34 @@ onMounted(async () => {
           <div class="text-[11px] text-text-faint">{{ t.description }}</div>
         </div>
         <span class="font-mono text-[11px]">
-          <span :class="t.kind === 'plugin' ? 'text-teal' : 'text-blue'">
+          <span
+            v-if="t.builtin"
+            class="rounded border border-teal/45 px-1.5 py-0.5 text-[10px] text-teal"
+            >内置</span
+          >
+          <span v-else :class="t.kind === 'plugin' ? 'text-teal' : 'text-blue'">
             {{ t.kind === "plugin" ? "代码插件" : "HTTP" }}
           </span>
         </span>
         <span class="truncate font-mono text-[11px] text-text-dim">
-          {{ t.kind === "plugin" ? t.config.plugin : `${t.config.method} ${t.config.url}` }}
+          {{ t.builtin ? "所有场景默认提供" : t.kind === "plugin" ? t.config.plugin : `${t.config.method} ${t.config.url}` }}
         </span>
         <span class="flex justify-end gap-2">
-          <button
-            class="rounded-md border border-line bg-panel-2 px-2.5 py-1 text-[11px] text-text-dim transition-colors hover:text-text"
-            @click="openEditor(t)"
-          >
-            编辑
-          </button>
-          <button
-            class="rounded-md border border-line bg-panel-2 px-2.5 py-1 text-[11px] text-text-dim transition-colors hover:border-red hover:text-red"
-            @click="remove(t)"
-          >
-            删除
-          </button>
+          <template v-if="!t.builtin">
+            <button
+              class="rounded-md border border-line bg-panel-2 px-2.5 py-1 text-[11px] text-text-dim transition-colors hover:text-text"
+              @click="openEditor(t)"
+            >
+              编辑
+            </button>
+            <button
+              class="rounded-md border border-line bg-panel-2 px-2.5 py-1 text-[11px] text-text-dim transition-colors hover:border-red hover:text-red"
+              @click="remove(t)"
+            >
+              删除
+            </button>
+          </template>
+          <span v-else class="text-[10px] text-text-faint">不可删除</span>
         </span>
       </div>
       <p v-if="!loading && tools.length === 0" class="py-10 text-center text-[13px] text-text-faint">

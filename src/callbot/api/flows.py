@@ -63,9 +63,19 @@ def _get_flow(session: Session, flow_id: str) -> Flow:
 
 
 def _validate_tool_bindings(session: Session, flow: Flow, definition: dict) -> list[str]:
-    """发布校验：handler 绑定的工具必须存在于本场景工具库。"""
+    """发布校验：handler 绑定的工具必须存在于本场景工具库或为内置工具。"""
+    from sqlalchemy import or_
+
     scene_tool_ids = {
-        str(t) for t in session.scalars(select(Tool.id).where(Tool.scene_id == flow.scene_id))
+        str(t)
+        for t in session.scalars(
+            select(Tool.id).where(
+                or_(
+                    Tool.scene_id == flow.scene_id,
+                    Tool.kind == "builtin",
+                )
+            )
+        )
     }
     errors: list[str] = []
     for node in definition.get("nodes", []):
