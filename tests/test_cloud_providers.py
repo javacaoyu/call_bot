@@ -1,22 +1,15 @@
-"""云端 Provider 单元测试（千问/火山/阿里协议层；无真实密钥，mock 流式循环）。"""
+"""云端 Provider 单元测试（千问/火山协议层；无真实密钥，mock 流式循环）。"""
 
 import base64
 import gzip
 import json
 import time
-from urllib.parse import unquote
 
 import pytest
 
 from callbot.engine.frames import AudioFrame
 from callbot.providers.asr import ASRResult
 from callbot.providers.base import ProviderConfig, create_asr, create_tts
-from callbot.providers.cloud.aliyun_tts import (
-    AliyunStreamingTTS,
-    build_create_token_url,
-    build_synthesis_message,
-    percent_encode,
-)
 from callbot.providers.cloud.base_cloud import CloudASRBase
 from callbot.providers.cloud.qwen_asr import QwenStreamingASR, build_qwen_asr_event
 from callbot.providers.cloud.qwen_tts import QwenStreamingTTS
@@ -281,44 +274,11 @@ def test_volc_incremental_prefix_delta() -> None:
     assert r5 is None  # 基准未清，无变化不重复推
 
 
-# ---------- 阿里 ----------
-
-
-def test_percent_encode() -> None:
-    """阿里签名 percentEncode：空格 %20，安全字符不动，中文转码。"""
-    assert percent_encode("a b") == "a%20b"
-    assert percent_encode("A-Za-z0-9-_.~") == "A-Za-z0-9-_.~"
-    assert percent_encode("中文") == "%E4%B8%AD%E6%96%87"
-
-
-def test_build_create_token_url() -> None:
-    """CreateToken URL：参数齐全、签名 percent 解码后可 base64 还原。"""
-    url = build_create_token_url("ak123", "sk456")
-    assert url.startswith("https://nls-meta.cn-shanghai.aliyuncs.com/?")
-    assert "Action=CreateToken" in url
-    assert "AccessKeyId=ak123" in url
-    assert "Signature=" in url
-    sig = unquote(url.split("Signature=")[1])
-    assert base64.b64decode(sig)  # base64 可解码
-
-
-def test_build_synthesis_message() -> None:
-    """Start/Stop 消息 header/payload 字段。"""
-    msg = json.loads(
-        build_synthesis_message("StartSynthesis", "appkey1", "task1", {"text": "你好"})
-    )
-    header = msg["header"]
-    assert header["name"] == "StartSynthesis"
-    assert header["namespace"] == "FlowingSpeechSynthesizer"
-    assert header["appkey"] == "appkey1"
-    assert header["task_id"] == "task1"
-    assert msg["payload"]["text"] == "你好"
-    stop = json.loads(build_synthesis_message("StopSynthesis", "appkey1", "task1", {}))
-    assert stop["header"]["name"] == "StopSynthesis"
+# ---------- 云端 ASR 公共线程模型 ----------
 
 
 class FakeAsyncWS:
-    """伪异步 WebSocket 连接（阿里 TTS 用）：记录 sent，按脚本吐帧。"""
+    """伪异步 WebSocket 连接：记录 sent，按脚本吐帧。"""
 
     def __init__(self, frames: list) -> None:
         self.sent: list[str] = []
@@ -362,42 +322,6 @@ class FakeWS:
 
     def __exit__(self, *args) -> bool:
         return False
-
-
-def _synthesis_event(name: str) -> str:
-    return json.dumps({"header": {"name": name}})
-
-
-async def test_aliyun_synthesize_stream(monkeypatch: pytest.MonkeyPatch) -> None:
-    """流式合成：Start → Started（立即 Stop）→ 音频帧 → Completed。"""
-    ws = FakeAsyncWS(
-        [
-            _synthesis_event("SynthesisStarted"),
-            b"\x01\x00" * 100,
-            _synthesis_event("SynthesisCompleted"),
-        ]
-    )
-    monkeypatch.setattr("websockets.connect", lambda *a, **kw: ws)
-    tts = AliyunStreamingTTS(appkey="appk", token="tok")
-    frames = [f async for f in tts.synthesize("你好。")]
-    assert len(frames) == 1
-    assert frames[0].data == b"\x01\x00" * 100
-    assert frames[0].sample_rate == 24000
-    assert len(ws.sent) == 2  # Start + Stop
-    start = json.loads(ws.sent[0])
-    assert start["header"]["name"] == "StartSynthesis"
-    assert start["payload"]["text"] == "你好。"
-    assert json.loads(ws.sent[1])["header"]["name"] == "StopSynthesis"
-
-
-async def test_aliyun_synthesize_empty_text() -> None:
-    """空/纯符号文本直接返回。"""
-    tts = AliyunStreamingTTS(appkey="appk", token="tok")
-    frames = [f async for f in tts.synthesize("  \n ")]
-    assert frames == []
-
-
-# ---------- 云端 ASR 公共线程模型 ----------
 
 
 class _FakeCloudASR(CloudASRBase):
@@ -475,8 +399,6 @@ def test_factory_cloud_branches() -> None:
     assert isinstance(asr, VolcStreamingASR)
     asr2 = create_asr(ProviderConfig(kind="qwen", api_key="k"))
     assert isinstance(asr2, QwenStreamingASR)
-    tts = create_tts(ProviderConfig(kind="aliyun", params={"appkey": "a", "token": "t"}))
-    assert isinstance(tts, AliyunStreamingTTS)
     tts2 = create_tts(ProviderConfig(kind="volc", api_key="k", params={"speaker": "s1"}))
     assert isinstance(tts2, VolcStreamingTTS)
     tts3 = create_tts(ProviderConfig(kind="qwen", api_key="k", params={"voice": "v1"}))

@@ -20,62 +20,50 @@ def asr_config_from_settings(settings: Any) -> ProviderConfig:
 
     云端 kind 缺失必填密钥时抛 ValueError（提示对应 env 名），
     启动即失败——比运行到一半才报错更易排查。
+    密钥按平台独立：volc 用 asr_volc_api_key、qwen 用 asr_qwen_api_key。
     """
     if settings.asr_kind == "funasr":
         return ProviderConfig(kind="funasr")
-    if settings.asr_kind in ("volc", "qwen"):
-        if not settings.asr_api_key:
-            raise ValueError(
-                f"{settings.asr_kind} ASR 缺少配置: CALLBOT_ASR_API_KEY"
-            )
-        if settings.asr_kind == "volc":
-            return ProviderConfig(
-                kind="volc",
-                api_key=settings.asr_api_key,
-                params={"resource_id": settings.asr_resource_id},
-            )
-        return ProviderConfig(kind="qwen", api_key=settings.asr_api_key)
+    if settings.asr_kind == "volc":
+        if not settings.asr_volc_api_key:
+            raise ValueError("volc ASR 缺少配置: CALLBOT_ASR_VOLC_API_KEY")
+        return ProviderConfig(
+            kind="volc",
+            api_key=settings.asr_volc_api_key,
+            params={"resource_id": settings.asr_resource_id},
+        )
+    if settings.asr_kind == "qwen":
+        if not settings.asr_qwen_api_key:
+            raise ValueError("qwen ASR 缺少配置: CALLBOT_ASR_QWEN_API_KEY")
+        return ProviderConfig(
+            kind="qwen",
+            api_key=settings.asr_qwen_api_key,
+            params={"model": settings.asr_qwen_model},
+        )
     raise ValueError(f"未知 ASR provider: {settings.asr_kind}")
 
 
 def tts_config_from_settings(settings: Any) -> ProviderConfig:
-    """Settings → TTS ProviderConfig（4.3 配置驱动切换）。"""
+    """Settings → TTS ProviderConfig（4.3 配置驱动切换）。
+
+    密钥复用同平台 ASR Key（火山 X-Api-Key 跨服务通用；千问 DashScope Key 同）。
+    """
     if settings.tts_kind == "cosyvoice":
         return ProviderConfig(kind="cosyvoice")
-    if settings.tts_kind == "aliyun":
-        if not settings.tts_appkey:
-            raise ValueError("aliyun TTS 缺少配置: CALLBOT_TTS_APPKEY")
-        has_token = bool(settings.tts_token)
-        has_ak = bool(settings.tts_access_key_id and settings.tts_access_key_secret)
-        if not has_token and not has_ak:
-            raise ValueError(
-                "aliyun TTS 缺少配置: CALLBOT_TTS_TOKEN 或 "
-                "CALLBOT_TTS_ACCESS_KEY_ID/ACCESS_KEY_SECRET"
-            )
-        return ProviderConfig(
-            kind="aliyun",
-            params={
-                "appkey": settings.tts_appkey,
-                "token": settings.tts_token,
-                "access_key_id": settings.tts_access_key_id,
-                "access_key_secret": settings.tts_access_key_secret,
-                "voice": settings.tts_voice,
-            },
-        )
     if settings.tts_kind == "volc":
-        if not settings.asr_api_key:
-            raise ValueError("volc TTS 缺少配置: CALLBOT_ASR_API_KEY（火山 Key 通用）")
+        if not settings.asr_volc_api_key:
+            raise ValueError("volc TTS 缺少配置: CALLBOT_ASR_VOLC_API_KEY（火山 Key 通用）")
         return ProviderConfig(
             kind="volc",
-            api_key=settings.asr_api_key,
+            api_key=settings.asr_volc_api_key,
             params={"speaker": settings.tts_volc_speaker},
         )
     if settings.tts_kind == "qwen":
-        if not settings.asr_api_key:
-            raise ValueError("qwen TTS 缺少配置: CALLBOT_ASR_API_KEY（千问 Key 通用）")
+        if not settings.asr_qwen_api_key:
+            raise ValueError("qwen TTS 缺少配置: CALLBOT_ASR_QWEN_API_KEY（千问 Key 通用）")
         return ProviderConfig(
             kind="qwen",
-            api_key=settings.asr_api_key,
+            api_key=settings.asr_qwen_api_key,
             params={"voice": settings.tts_qwen_voice},
         )
     raise ValueError(f"未知 TTS provider: {settings.tts_kind}")
@@ -123,26 +111,19 @@ def create_asr(cfg: ProviderConfig) -> StreamingASR:
     if cfg.kind == "qwen":
         from callbot.providers.cloud.qwen_asr import QwenStreamingASR
 
-        return QwenStreamingASR(api_key=cfg.api_key)
+        return QwenStreamingASR(
+            api_key=cfg.api_key,
+            model=cfg.params.get("model", "qwen-audio-3.1-asr-flash-streaming"),
+        )
     raise ValueError(f"未知 ASR provider: {cfg.kind}")
 
 
 def create_tts(cfg: ProviderConfig) -> StreamingTTS:
-    """TTS 工厂：按 kind 分发（cosyvoice 本地；aliyun 云端 4.2 接入）。"""
+    """TTS 工厂：按 kind 分发（cosyvoice 本地；volc/qwen 云端）。"""
     if cfg.kind == "cosyvoice":
         from callbot.providers.tts import CosyVoice2StreamingTTS
 
         return CosyVoice2StreamingTTS()
-    if cfg.kind == "aliyun":
-        from callbot.providers.cloud.aliyun_tts import AliyunStreamingTTS
-
-        return AliyunStreamingTTS(
-            appkey=cfg.params.get("appkey", ""),
-            token=cfg.params.get("token", ""),
-            access_key_id=cfg.params.get("access_key_id", ""),
-            access_key_secret=cfg.params.get("access_key_secret", ""),
-            voice=cfg.params.get("voice", "longxiaochun"),
-        )
     if cfg.kind == "volc":
         from callbot.providers.cloud.volc_tts import VolcStreamingTTS
 

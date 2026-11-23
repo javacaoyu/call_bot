@@ -29,22 +29,20 @@ class Settings(BaseSettings):
     # 编排层后端：agentscope（默认）| simple（自建 fallback）
     orchestration_backend: str = "agentscope"
     # Provider 切换（WBS 4.1/4.3）：三环节 kind 配置。
-    # asr_kind: funasr（本地）| volc | qwen；tts_kind: cosyvoice（本地）| volc | qwen | aliyun
+    # asr_kind: funasr（本地）| volc | qwen；tts_kind: cosyvoice（本地）| volc | qwen
     asr_kind: str = "funasr"
     tts_kind: str = "cosyvoice"
-    # 云端 ASR 密钥：volc/qwen 共用 asr_api_key（两平台同 Key 模式）
-    asr_api_key: str = ""
+    # 云端 ASR 密钥：双平台各自独立（TTS 复用同平台 ASR Key——
+    # 火山同一账号 X-Api-Key 跨服务通用；千问 DashScope Key 同）
+    asr_volc_api_key: str = ""
+    asr_qwen_api_key: str = ""
     asr_resource_id: str = "volc.seedasr.sauc.duration"
-    # 云端 TTS 密钥：aliyun 用 appkey +（token 直配优先，否则 access_key_id/secret 签名）
-    tts_appkey: str = ""
-    tts_token: str = ""
-    tts_access_key_id: str = ""
-    tts_access_key_secret: str = ""
-    tts_voice: str = "longxiaochun"
-    # 火山 TTS 音色（豆包语音合成 2.0 默认音色；api_key 复用 asr_api_key——
+    # 千问 ASR 模型（5.2 面板可选）
+    asr_qwen_model: str = "qwen-audio-3.1-asr-flash-streaming"
+    # 火山 TTS 音色（豆包语音合成 2.0 默认音色；api_key 复用 asr_volc_api_key——
     # 火山同一账号 X-Api-Key 跨服务通用）
     tts_volc_speaker: str = "zh_female_vv_uranus_bigtts"
-    # 千问 TTS 音色（Qwen-Audio-TTS 系统音色；api_key 复用 asr_api_key，同 Key）
+    # 千问 TTS 音色（Qwen-Audio-TTS 系统音色；api_key 复用 asr_qwen_api_key，同 Key）
     tts_qwen_voice: str = "longanhuan_v3.1"
     # VAD（WBS 3.1/3.4）：Silero 模型路径与灵敏度参数（相对路径基于项目根）。
     # min_speech_ms 为起音观察窗 = 打断灵敏度核心旋钮（越小打断越快但越易误触发）；

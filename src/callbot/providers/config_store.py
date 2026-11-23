@@ -19,21 +19,18 @@ _CONFIG_PATH = _PROJECT_ROOT / "provider_config.json"
 # Web 可配置的 provider 相关字段（与 Settings 字段名一一对应）
 _PROVIDER_FIELDS = (
     "asr_kind",
-    "asr_api_key",
+    "asr_volc_api_key",
+    "asr_qwen_api_key",
     "asr_resource_id",
+    "asr_qwen_model",
     "tts_kind",
-    "tts_appkey",
-    "tts_token",
-    "tts_access_key_id",
-    "tts_access_key_secret",
-    "tts_voice",
+
     "tts_volc_speaker",
     "tts_qwen_voice",
     "llm_base_url",
     "llm_api_key",
     "llm_model",
 )
-
 
 def load_provider_overrides(path: Path | None = None) -> dict[str, str]:
     """读 JSON 覆盖层；文件缺失/损坏返回空 dict（不阻断启动）。"""
@@ -47,13 +44,11 @@ def load_provider_overrides(path: Path | None = None) -> dict[str, str]:
         return {}
     return {k: str(v) for k, v in data.items() if k in _PROVIDER_FIELDS}
 
-
 def save_provider_overrides(values: dict[str, str], path: Path | None = None) -> None:
     """保存 JSON 覆盖层（仅接受白名单字段）。"""
     target = path or _CONFIG_PATH
     filtered = {k: values[k] for k in _PROVIDER_FIELDS if k in values}
     target.write_text(json.dumps(filtered, ensure_ascii=False, indent=2) + "\n")
-
 
 def apply_provider_overrides(settings: object) -> None:
     """把 JSON 覆盖层应用到 Settings 实例（json > env > 默认）。"""

@@ -17,19 +17,57 @@ const TTS_KINDS = [
   { value: "cosyvoice", label: "本地 CosyVoice2", side: "local" },
   { value: "volc", label: "火山", side: "cloud" },
   { value: "qwen", label: "千问", side: "cloud" },
-  { value: "aliyun", label: "阿里", side: "cloud" },
 ] as const;
+
+/** 音色列表（5.2）：各 TTS provider 的常用音色 + 自定义兜底。 */
+/** 火山豆包语音合成 2.0 音色（官方音色列表验证，外呼场景精选）。 */
+const VOLC_VOICES = [
+  { value: "zh_female_vv_uranus_bigtts", label: "Vivi 女声（默认）" },
+  { value: "zh_female_qinqienv_uranus_bigtts", label: "亲切女声" },
+  { value: "zh_female_tiexinnvsheng_uranus_bigtts", label: "贴心女生" },
+  { value: "zh_female_wenroushunv_uranus_bigtts", label: "温柔淑女" },
+  { value: "zh_female_shuangkuaisisi_moon_bigtts", label: "爽快女声" },
+  { value: "zh_male_wennuanahu_uranus_bigtts", label: "温暖男声" },
+  { value: "zh_male_wenrouxiaoge_uranus_bigtts", label: "温柔小哥" },
+  { value: "zh_male_qingshuangnanda_uranus_bigtts", label: "清爽男声" },
+];
+const VOLC_VOICE_VALUES = VOLC_VOICES.map((v) => v.value);
+/** 千问 Qwen-Audio-TTS 系统音色（逐个实测 HTTP 200 验证，特质标注）。 */
+const QWEN_VOICES = [
+  { value: "longanhuan_v3.1", label: "欢快 · 女声（默认）" },
+  { value: "longanlingxin_v3.1", label: "知心温暖 · 女声" },
+  { value: "longanfengyue_v3.1", label: "自然亲切 · 女声" },
+  { value: "longanlingxi_v3.1", label: "可爱甜美 · 女声" },
+  { value: "longanyuanfei_v3.1", label: "高傲妃子 · 女声" },
+  { value: "longanwen_v3.1", label: "文静 · 女声" },
+  { value: "longanyang_v3.1", label: "阳光 · 男声" },
+  { value: "longanzhi_v3.1", label: "知性 · 女声" },
+  { value: "longanlang_v3.1", label: "朗朗 · 男声" },
+  { value: "longanli_v3.1", label: "利落 · 男声" },
+  { value: "longanya_v3.1", label: "雅致 · 女声" },
+  { value: "longanchong_v3.1", label: "宠溺 · 男声" },
+];
+const QWEN_VOICE_VALUES = QWEN_VOICES.map((v) => v.value);
+
+/** 模型版本（5.2）：火山资源 / 千问 ASR 模型 / LLM 模型。 */
+const VOLC_RESOURCE_IDS = [
+  { value: "volc.seedasr.sauc.duration", label: "识别 2.0 · 时长版" },
+  { value: "volc.seedasr.sauc.concurrent", label: "识别 2.0 · 并发版" },
+];
+const QWEN_ASR_MODELS = [
+  { value: "qwen-audio-3.1-asr-flash-streaming", label: "实时版（中间结果）" },
+  { value: "qwen-audio-3.1-asr-flash-message", label: "短句版（仅最终结果）" },
+];
+const LLM_MODELS = ["deepseek-chat", "deepseek-reasoner"];
+
 
 const cfg = reactive<ProviderConfig>({
   asr_kind: "funasr",
-  asr_api_key: "",
+  asr_volc_api_key: "",
+  asr_qwen_api_key: "",
   asr_resource_id: "volc.seedasr.sauc.duration",
+  asr_qwen_model: "qwen-audio-3.1-asr-flash-streaming",
   tts_kind: "cosyvoice",
-  tts_appkey: "",
-  tts_token: "",
-  tts_access_key_id: "",
-  tts_access_key_secret: "",
-  tts_voice: "longxiaochun",
   tts_volc_speaker: "zh_female_vv_uranus_bigtts",
   tts_qwen_voice: "longanhuan_v3.1",
   llm_base_url: "",
@@ -143,17 +181,25 @@ onMounted(load);
           <div v-if="cfg.asr_kind === 'volc'" class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5 gap-x-3.5">
             <label class="flex flex-col gap-1 text-xs text-text-dim">
               api_key
-              <input v-model="cfg.asr_api_key" type="password" placeholder="X-Api-Key" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+              <input v-model="cfg.asr_volc_api_key" type="password" placeholder="火山 X-Api-Key" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
             </label>
             <label class="flex flex-col gap-1 text-xs text-text-dim">
-              资源 ID
-              <input v-model="cfg.asr_resource_id" placeholder="volc.seedasr.sauc.duration" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+              模型版本
+              <select v-model="cfg.asr_resource_id" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue">
+                <option v-for="r in VOLC_RESOURCE_IDS" :key="r.value" :value="r.value">{{ r.label }}</option>
+              </select>
             </label>
           </div>
           <div v-else-if="cfg.asr_kind === 'qwen'" class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5">
             <label class="flex flex-col gap-1 text-xs text-text-dim">
               api_key
-              <input v-model="cfg.asr_api_key" type="password" placeholder="sk-...（DashScope API Key）" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+              <input v-model="cfg.asr_qwen_api_key" type="password" placeholder="sk-...（DashScope API Key）" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-text-dim">
+              模型
+              <select v-model="cfg.asr_qwen_model" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue">
+                <option v-for="m in QWEN_ASR_MODELS" :key="m.value" :value="m.value">{{ m.label }}</option>
+              </select>
             </label>
           </div>
           <p v-else class="text-[13px] text-text-dim">本地模型，无需密钥。</p>
@@ -183,8 +229,19 @@ onMounted(load);
               <input v-model="cfg.llm_api_key" type="password" placeholder="API Key" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
             </label>
             <label class="flex flex-col gap-1 text-xs text-text-dim">
-              模型名
-              <input v-model="cfg.llm_model" placeholder="deepseek-chat" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+              模型
+              <select
+                :value="LLM_MODELS.includes(cfg.llm_model) ? cfg.llm_model : '__custom__'"
+                class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue"
+                @change="(e: Event) => { const v = (e.target as HTMLSelectElement).value; if (v !== '__custom__') cfg.llm_model = v; }"
+              >
+                <option v-for="m in LLM_MODELS" :key="m" :value="m">{{ m }}</option>
+                <option value="__custom__">自定义…</option>
+              </select>
+            </label>
+            <label v-if="!LLM_MODELS.includes(cfg.llm_model)" class="flex flex-col gap-1 text-xs text-text-dim">
+              自定义模型名
+              <input v-model="cfg.llm_model" placeholder="输入模型 ID" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
             </label>
           </div>
         </div>
@@ -232,7 +289,18 @@ onMounted(load);
           <div v-if="cfg.tts_kind === 'volc'" class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5">
             <label class="flex flex-col gap-1 text-xs text-text-dim">
               音色
-              <input v-model="cfg.tts_volc_speaker" placeholder="zh_female_vv_uranus_bigtts" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+              <select
+                :value="VOLC_VOICE_VALUES.includes(cfg.tts_volc_speaker) ? cfg.tts_volc_speaker : '__custom__'"
+                class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue"
+                @change="(e: Event) => { const v = (e.target as HTMLSelectElement).value; if (v !== '__custom__') cfg.tts_volc_speaker = v; }"
+              >
+                <option v-for="v in VOLC_VOICES" :key="v.value" :value="v.value">{{ v.label }}（{{ v.value }}）</option>
+                <option value="__custom__">自定义…</option>
+              </select>
+            </label>
+            <label v-if="!VOLC_VOICE_VALUES.includes(cfg.tts_volc_speaker)" class="flex flex-col gap-1 text-xs text-text-dim">
+              自定义音色 ID
+              <input v-model="cfg.tts_volc_speaker" placeholder="音色 ID" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
             </label>
             <p class="col-span-full text-[13px] text-text-dim">
               api_key 复用语音识别线路的密钥（火山同一账号 Key 通用）。
@@ -241,35 +309,26 @@ onMounted(load);
           <div v-else-if="cfg.tts_kind === 'qwen'" class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5">
             <label class="flex flex-col gap-1 text-xs text-text-dim">
               音色
-              <input v-model="cfg.tts_qwen_voice" placeholder="longanhuan_v3.1" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
+              <select
+                :value="QWEN_VOICE_VALUES.includes(cfg.tts_qwen_voice) ? cfg.tts_qwen_voice : '__custom__'"
+                class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue"
+                @change="(e: Event) => { const v = (e.target as HTMLSelectElement).value; if (v !== '__custom__') cfg.tts_qwen_voice = v; }"
+              >
+                <option v-for="v in QWEN_VOICES" :key="v.value" :value="v.value">{{ v.label }}（{{ v.value }}）</option>
+                <option value="__custom__">自定义…</option>
+              </select>
+            </label>
+            <label v-if="!QWEN_VOICE_VALUES.includes(cfg.tts_qwen_voice)" class="flex flex-col gap-1 text-xs text-text-dim">
+              自定义音色
+              <input v-model="cfg.tts_qwen_voice" placeholder="音色 ID" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
             </label>
             <p class="col-span-full text-[13px] text-text-dim">
               api_key 复用语音识别线路的密钥（千问同一账号 Key 通用）。
             </p>
           </div>
-          <div v-else-if="cfg.tts_kind === 'aliyun'" class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5 gap-x-3.5">
-            <label class="flex flex-col gap-1 text-xs text-text-dim">
-              appkey
-              <input v-model="cfg.tts_appkey" placeholder="阿里云 NLS 项目 AppKey" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
-            </label>
-            <label class="flex flex-col gap-1 text-xs text-text-dim">
-              token
-              <input v-model="cfg.tts_token" type="password" placeholder="临时 token（或留空用 AK/SK）" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
-            </label>
-            <label class="flex flex-col gap-1 text-xs text-text-dim">
-              AccessKey ID
-              <input v-model="cfg.tts_access_key_id" placeholder="token 留空时使用" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
-            </label>
-            <label class="flex flex-col gap-1 text-xs text-text-dim">
-              AccessKey Secret
-              <input v-model="cfg.tts_access_key_secret" type="password" placeholder="token 留空时使用" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
-            </label>
-            <label class="flex flex-col gap-1 text-xs text-text-dim">
-              音色
-              <input v-model="cfg.tts_voice" placeholder="longxiaochun" class="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text outline-none focus:border-blue" />
-            </label>
-          </div>
-          <p v-else class="text-[13px] text-text-dim">本地模型，无需密钥。</p>
+          <p v-else class="text-[13px] text-text-dim">
+            本地 CosyVoice2 使用参考音频克隆音色，无需密钥。
+          </p>
         </div>
       </section>
     </template>

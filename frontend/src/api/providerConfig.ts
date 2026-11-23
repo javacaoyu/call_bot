@@ -2,14 +2,11 @@
 
 export interface ProviderConfig {
   asr_kind: string;
-  asr_api_key: string;
+  asr_volc_api_key: string;
+  asr_qwen_api_key: string;
   asr_resource_id: string;
+  asr_qwen_model: string;
   tts_kind: string;
-  tts_appkey: string;
-  tts_token: string;
-  tts_access_key_id: string;
-  tts_access_key_secret: string;
-  tts_voice: string;
   tts_volc_speaker: string;
   tts_qwen_voice: string;
   llm_base_url: string;

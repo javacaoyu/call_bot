@@ -37,10 +37,10 @@ def test_save_roundtrip_and_filter(tmp_path) -> None:
     """保存只写白名单字段，读回一致。"""
     path = tmp_path / "pc.json"
     config_store.save_provider_overrides(
-        {"tts_kind": "aliyun", "tts_token": "t", "unknown": "x"}, path
+        {"tts_kind": "qwen", "tts_qwen_voice": "v1", "unknown": "x"}, path
     )
     data = json.loads(path.read_text())
-    assert data == {"tts_kind": "aliyun", "tts_token": "t"}
+    assert data == {"tts_kind": "qwen", "tts_qwen_voice": "v1"}
     assert config_store.load_provider_overrides(path) == data
 
 

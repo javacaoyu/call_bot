@@ -78,24 +78,24 @@ def test_asr_config_funasr_default() -> None:
 
 def test_asr_config_qwen_mapping() -> None:
     """qwen：api_key 直接映射（无额外参数）。"""
-    cfg = asr_config_from_settings(_settings(asr_kind="qwen", asr_api_key="k"))
+    cfg = asr_config_from_settings(_settings(asr_kind="qwen", asr_qwen_api_key="k"))
     assert cfg.kind == "qwen"
     assert cfg.api_key == "k"
 
 
 def test_asr_config_qwen_missing_key() -> None:
     """qwen 缺密钥报错并提示 env 名。"""
-    with pytest.raises(ValueError, match="CALLBOT_ASR_API_KEY"):
+    with pytest.raises(ValueError, match="CALLBOT_ASR_QWEN_API_KEY"):
         asr_config_from_settings(_settings(asr_kind="qwen"))
 
 
 def test_asr_config_volc_mapping() -> None:
     """volc：api_key + 默认 resource_id。"""
-    cfg = asr_config_from_settings(_settings(asr_kind="volc", asr_api_key="k"))
+    cfg = asr_config_from_settings(_settings(asr_kind="volc", asr_volc_api_key="k"))
     assert cfg.kind == "volc"
     assert cfg.api_key == "k"
     assert cfg.params["resource_id"] == "volc.seedasr.sauc.duration"
-    with pytest.raises(ValueError, match="CALLBOT_ASR_API_KEY"):
+    with pytest.raises(ValueError, match="CALLBOT_ASR_VOLC_API_KEY"):
         asr_config_from_settings(_settings(asr_kind="volc"))
 
 
@@ -111,55 +111,24 @@ def test_tts_config_cosyvoice_default() -> None:
     assert cfg == ProviderConfig(kind="cosyvoice")
 
 
-def test_tts_config_aliyun_token() -> None:
-    """aliyun：token 直配优先映射。"""
-    cfg = tts_config_from_settings(
-        _settings(tts_kind="aliyun", tts_appkey="app", tts_token="tok")
-    )
-    assert cfg.kind == "aliyun"
-    assert cfg.params["appkey"] == "app"
-    assert cfg.params["token"] == "tok"
-
-
-def test_tts_config_aliyun_missing_auth() -> None:
-    """aliyun 缺 appkey 或双鉴权均缺时报错。"""
-    with pytest.raises(ValueError, match="CALLBOT_TTS_APPKEY"):
-        tts_config_from_settings(_settings(tts_kind="aliyun", tts_token="t"))
-    with pytest.raises(ValueError, match="CALLBOT_TTS_TOKEN"):
-        tts_config_from_settings(_settings(tts_kind="aliyun", tts_appkey="a"))
-
-
-def test_tts_config_aliyun_ak_sk() -> None:
-    """aliyun：AK/SK 路径也可通过校验。"""
-    cfg = tts_config_from_settings(
-        _settings(
-            tts_kind="aliyun",
-            tts_appkey="app",
-            tts_access_key_id="ak",
-            tts_access_key_secret="sk",
-        )
-    )
-    assert cfg.params["access_key_id"] == "ak"
-    assert cfg.params["voice"] == "longxiaochun"
-
 
 def test_tts_config_volc_mapping() -> None:
-    """volc：api_key 复用 asr_api_key，speaker 从 tts_volc_speaker 取。"""
-    cfg = tts_config_from_settings(_settings(tts_kind="volc", asr_api_key="k"))
+    """volc：api_key 复用 asr_volc_api_key，speaker 从 tts_volc_speaker 取。"""
+    cfg = tts_config_from_settings(_settings(tts_kind="volc", asr_volc_api_key="k"))
     assert cfg.kind == "volc"
     assert cfg.api_key == "k"
     assert cfg.params["speaker"] == "zh_female_vv_uranus_bigtts"
-    with pytest.raises(ValueError, match="CALLBOT_ASR_API_KEY"):
+    with pytest.raises(ValueError, match="CALLBOT_ASR_VOLC_API_KEY"):
         tts_config_from_settings(_settings(tts_kind="volc"))
 
 
 def test_tts_config_qwen_mapping() -> None:
-    """qwen：api_key 复用 asr_api_key，voice 从 tts_qwen_voice 取（同 Key 模式）。"""
-    cfg = tts_config_from_settings(_settings(tts_kind="qwen", asr_api_key="k"))
+    """qwen：api_key 复用 asr_qwen_api_key，voice 从 tts_qwen_voice 取（同 Key 模式）。"""
+    cfg = tts_config_from_settings(_settings(tts_kind="qwen", asr_qwen_api_key="k"))
     assert cfg.kind == "qwen"
     assert cfg.api_key == "k"
     assert cfg.params["voice"] == "longanhuan_v3.1"
-    with pytest.raises(ValueError, match="CALLBOT_ASR_API_KEY"):
+    with pytest.raises(ValueError, match="CALLBOT_ASR_QWEN_API_KEY"):
         tts_config_from_settings(_settings(tts_kind="qwen"))
 
 

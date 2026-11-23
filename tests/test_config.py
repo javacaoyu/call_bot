@@ -49,30 +49,27 @@ def test_settings_provider_kinds() -> None:
 def test_settings_provider_kind_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     """CALLBOT_ASR_KIND / CALLBOT_TTS_KIND 环境变量覆盖。"""
     monkeypatch.setenv("CALLBOT_ASR_KIND", "qwen")
-    monkeypatch.setenv("CALLBOT_TTS_KIND", "aliyun")
+    monkeypatch.setenv("CALLBOT_TTS_KIND", "qwen")
     settings = Settings(_env_file=None)
     assert settings.asr_kind == "qwen"
-    assert settings.tts_kind == "aliyun"
+    assert settings.tts_kind == "qwen"
 
 
 def test_settings_cloud_provider_defaults() -> None:
     """云端密钥字段默认值（4.3 配置驱动切换）。"""
     settings = Settings(_env_file=None)
-    assert settings.asr_api_key == ""
+    assert settings.asr_volc_api_key == ""
+    assert settings.asr_qwen_api_key == ""
     assert settings.asr_resource_id == "volc.seedasr.sauc.duration"
-    assert settings.tts_appkey == ""
-    assert settings.tts_token == ""
-    assert settings.tts_access_key_id == ""
-    assert settings.tts_access_key_secret == ""
-    assert settings.tts_voice == "longxiaochun"
+    assert settings.asr_qwen_model == "qwen-audio-3.1-asr-flash-streaming"
     assert settings.tts_volc_speaker == "zh_female_vv_uranus_bigtts"
     assert settings.tts_qwen_voice == "longanhuan_v3.1"
 
 
 def test_settings_cloud_provider_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     """CALLBOT_ASR_/CALLBOT_TTS_ 前缀环境变量覆盖云端密钥。"""
-    monkeypatch.setenv("CALLBOT_ASR_API_KEY", "key1")
+    monkeypatch.setenv("CALLBOT_ASR_VOLC_API_KEY", "key1")
     monkeypatch.setenv("CALLBOT_TTS_QWEN_VOICE", "voice1")
     settings = Settings(_env_file=None)
-    assert settings.asr_api_key == "key1"
+    assert settings.asr_volc_api_key == "key1"
     assert settings.tts_qwen_voice == "voice1"
